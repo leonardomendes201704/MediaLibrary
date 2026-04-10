@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.venv_tray/
+venv/
+
+# Backend runtime
+media_library.db
+media_library.db-journal
+backend/media_library.db
+backend/media_library.db.bak-*
+backend/media_library.db-journal
+backend/media_optimized/
+backend/media_thumbs/
+backend/channel_hls/
+backend/reddit_downloads/
+backend/video_vod/
+backend/__pycache__/
+backend/hls-test.m3u8
+media_optimized/
+media_thumbs/
+channel_hls/
+reddit_downloads/
+vod-test.m3u
+dist/
+build/
+backend/.env
+tools/gradle/
+
+# Android
+android-app/.gradle/
+android-app/local.properties
+android-app/**/build/
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

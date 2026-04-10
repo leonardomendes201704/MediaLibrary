@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Media Library Admin</title>
+    <link rel="stylesheet" href="/static/styles.css?v=20260401r14" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <h1>Media Library Admin</h1>
+        <p class="subtitle">Watcher, transcode queue and local feed control</p>
+      </div>
+      <div class="topbar-actions">
+        <div id="pipeline-state" class="pipeline-state state-unknown">Pipeline: checking...</div>
+        <button id="pipeline-start" class="btn-start">Iniciar</button>
+        <button id="pipeline-pause" class="btn-pause">Pausar</button>
+        <button id="pipeline-stop" class="btn-stop">Parar</button>
+        <button id="refresh-all">Refresh</button>
+      </div>
+    </header>
+
+    <main class="grid">
+      <section class="card collapsible-section" data-section-id="backend-status">
+        <button class="section-toggle" type="button" data-section-toggle aria-expanded="true">
+          <span class="section-arrow">▾</span>
+          <span class="section-title">Backend Status</span>
+        </button>
+        <div class="section-body">
+          <div id="health-state">Checking...</div>
+          <div id="stats-grid" class="stats-grid"></div>
+          <div class="processing-block">
+            <div class="processing-label">Processando agora</div>
+            <div id="processing-now" class="processing-now"></div>
+          </div>
+          <div class="categories-block">
+            <div class="category-subsection">
+              <div class="categories-header categories-subheader">
+                <h3>Categorias</h3>
+                <div class="categories-header-actions">
+                  <button id="reset-library-btn" type="button">Zerar base (preserva configs)</button>
+                  <button id="cleanup-all-downloaded-videos-btn" type="button">Limpar videos baixados do app, menos favoritos</button>
+                  <button id="cleanup-watched-unfavorited-btn" type="button">Remover Visualizados nao favoritados</button>
+                  <span id="categories-meta" class="categories-meta"></span>
+                </div>
+              </div>
+              <div id="categories-action-status" class="reddit-status"></div>
+              <div id="categories-chips" class="category-chip-list"></div>
+            </div>
+            <div class="category-subsection collapsible-section collapsed" id="channels-section" data-section-id="channels" data-default-collapsed="true">
+              <button class="section-toggle" type="button" data-section-toggle aria-expanded="false">
+                <span class="section-arrow">â–¾</span>
+                <span class="section-title">Canais</span>
+              </button>
+              <div class="section-body">
+                <div class="categories-header categories-subheader">
+                  <div class="categories-header-actions">
+                    <a id="channels-master-link" class="channel-header-link" href="/api/channels/master.m3u" download>Baixar master.m3u</a>
+                    <a id="channels-vod-link" class="channel-header-link" href="/api/channels/vod.m3u" download>Baixar vod.m3u</a>
+                    <span id="channels-meta" class="categories-meta"></span>
+                  </div>
+                </div>
+                <p class="channels-hint">Cada canal virtual expoe uma playlist M3U da categoria e reutiliza os streams ja processados. <code>master.m3u</code> e para canais live por categoria; <code>vod.m3u</code> expoe os videos individuais com as thumbs ja geradas.</p>
+                <div id="channels-list" class="channel-list"></div>
+              </div>
+            </div>
+            <div class="category-subsection" id="users-section">
+              <div class="categories-header categories-subheader">
+                <h3>Usuarios</h3>
+                <span id="users-meta" class="categories-meta"></span>
+              </div>
+              <div id="users-chips" class="category-chip-list"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="card collapsible-section" data-section-id="folders">
+        <button class="section-toggle" type="button" data-section-toggle aria-expanded="true">
+          <span class="section-arrow">▾</span>
+          <span class="section-title">Folders</span>
+        </button>
+        <div class="section-body">
+          <form id="folder-form" class="inline-form">
+            <input id="folder-path" type="text" placeholder="C:\\videos\\feed" required />
+            <label><input id="folder-serve" type="checkbox" checked /> Serve files</label>
+            <label><input id="folder-subdirs" type="checkbox" checked /> Include subdirs</label>
+            <button type="submit">Add Folder</button>
+          </form>
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Path</th>
+                <th>Active</th>
+                <th>Serve</th>
+                <th>Videos</th>
+                <th>Ready</th>
+                <th>Errors</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="folders-table"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="card collapsible-section" data-section-id="videos">
+        <button class="section-toggle" type="button" data-section-toggle aria-expanded="true">
+          <span class="section-arrow">▾</span>
+          <span class="section-title">Videos</span>
+        </button>
+        <div class="section-body">
+          <div class="inline-form">
+            <select id="video-status-filter">
+              <option value="">All</option>
+              <option value="ready">Ready</option>
+              <option value="processing">Processing</option>
+              <option value="error">Error</option>
+              <option value="duplicate">Duplicate</option>
+              <option value="removed">Removed</option>
+            </select>
+            <button id="videos-refresh-btn">Refresh Videos</button>
+            <button id="videos-backfill-audio-btn" type="button">Atualizar audio antigos</button>
+          </div>
+          <div id="videos-action-status" class="reddit-status"></div>
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Status</th>
+                <th>Resolution</th>
+                <th>Duration</th>
+                <th>Audio</th>
+                <th>Path</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="videos-table"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="card collapsible-section" data-section-id="jobs">
+        <button class="section-toggle" type="button" data-section-toggle aria-expanded="true">
+          <span class="section-arrow">▾</span>
+          <span class="section-title">Jobs</span>
+        </button>
+        <div class="section-body">
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Type</th>
+                <th>Status</th>
+                <th>Attempts</th>
+                <th>Video</th>
+                <th>Error</th>
+              </tr>
+            </thead>
+            <tbody id="jobs-table"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="card collapsible-section" data-section-id="config">
+        <button class="section-toggle" type="button" data-section-toggle aria-expanded="true">
+          <span class="section-arrow">▾</span>
+          <span class="section-title">Config (K/V)</span>
+        </button>
+        <div class="section-body">
+          <form id="config-form" class="inline-form">
+            <input id="config-key" type="text" placeholder="transcode_maxrate" required />
+            <input id="config-value" type="text" placeholder="4500k" required />
+            <button type="submit">Save</button>
+          </form>
+          <table>
+            <thead>
+              <tr>
+                <th>Key</th>
+                <th>Value</th>
+              </tr>
+            </thead>
+            <tbody id="config-table"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="card collapsible-section" data-section-id="notes">
+        <button class="section-toggle" type="button" data-section-toggle aria-expanded="true">
+          <span class="section-arrow">▾</span>
+          <span class="section-title">Anotacoes</span>
+        </button>
+        <div class="section-body">
+          <form id="notes-form" class="notes-form">
+            <p class="notes-hint">Texto livre salvo no banco local. Use para observacoes, tarefas ou contexto operacional.</p>
+            <textarea id="admin-notes" class="notes-textarea" placeholder="Escreva suas anotacoes aqui..."></textarea>
+            <div class="notes-actions">
+              <div id="notes-status" class="reddit-status">Carregando anotacoes...</div>
+              <button type="submit">Salvar anotacoes</button>
+            </div>
+          </form>
+          <form id="download-space-form" class="notes-secondary-form">
+            <p class="notes-hint">Espaco livre minimo exigido antes de iniciar downloads Reddit. Valor padrao atual: 8 GB.</p>
+            <div class="notes-actions">
+              <label class="notes-inline-field" for="download-min-free-gb">
+                <span>Minimo livre (GB)</span>
+                <input id="download-min-free-gb" type="number" min="1" step="0.5" inputmode="decimal" />
+              </label>
+              <button type="submit">Salvar minimo</button>
+            </div>
+            <div id="download-space-status" class="reddit-status">Carregando limite de espaco...</div>
+          </form>
+          <form id="transcode-quality-form" class="notes-secondary-form">
+            <p class="notes-hint">Ajuste a qualidade da recompressao dos novos videos. 100% = perfil atual; reduzir para 80% ou menos tende a gerar arquivos menores. Se quiser aplicar nos itens ja processados, use Reprocess no video.</p>
+            <div class="transcode-quality-controls">
+              <label class="transcode-quality-field" for="transcode-quality-range">
+                <span>Qualidade do transcode</span>
+                <input id="transcode-quality-range" type="range" min="0" max="100" step="5" />
+                <strong id="transcode-quality-value" class="transcode-quality-value">-</strong>
+              </label>
+              <button type="submit">Salvar qualidade</button>
+            </div>
+            <div id="transcode-quality-status" class="reddit-status">Carregando qualidade do transcode...</div>
+          </form>
+        </div>
+      </section>
+
+      <section class="card collapsible-section" data-section-id="reddit-subreddits">
+        <button class="section-toggle" type="button" data-section-toggle aria-expanded="true">
+          <span class="section-arrow">â–¾</span>
+          <span class="section-title">Reddit Subscriptions</span>
+        </button>
+        <div class="section-body">
+          <div id="reddit-config-status" class="reddit-status">Checking Reddit config...</div>
+          <div class="reddit-actions">
+            <label class="reddit-auto-toggle" title="Quando ligado, o backend aguarda 5 minutos de ociosidade antes de disparar o auto-download dos subreddits u_.">
+              <input id="reddit-auto-download-toggle" type="checkbox" checked />
+              <span>Auto-download quando ocioso</span>
+            </label>
+            <button id="reddit-fetch-btn" type="button">Buscar assinaturas</button>
+            <button id="reddit-save-btn" type="button">Salvar selecao</button>
+            <button id="reddit-select-all-btn" type="button">Selecionar tudo</button>
+            <button id="reddit-clear-btn" type="button">Limpar selecao</button>
+            <button id="reddit-download-btn" type="button" class="btn-reddit-download">Baixar ultimos 10 videos</button>
+            <button id="reddit-download-empty-categories-btn" type="button" class="btn-reddit-download">Baixar 5 videos de categorias vazias</button>
+            <button id="reddit-stop-btn" type="button">Parar download atual/periodo</button>
+            <div class="reddit-period-actions">
+              <select id="reddit-period-select">
+                <option value="1">1 mes</option>
+                <option value="2">2 meses</option>
+                <option value="3">3 meses</option>
+                <option value="6">6 meses</option>
+                <option value="12">1 ano</option>
+              </select>
+              <button id="reddit-period-download-btn" type="button" class="btn-reddit-download">Baixar periodo</button>
+            </div>
+          </div>
+          <div class="reddit-filter-row">
+            <input id="reddit-filter-input" type="text" placeholder="Filtrar subreddit..." />
+            <span id="reddit-list-meta" class="reddit-meta"></span>
+          </div>
+          <div id="reddit-subreddits-list" class="reddit-subreddits-list"></div>
+          <div class="reddit-monitor">
+            <div class="reddit-monitor-header">
+              <h4>Monitor de download</h4>
+              <span id="reddit-download-inline-summary" class="reddit-meta">Nenhum download ativo.</span>
+            </div>
+            <div class="reddit-download-progress-track">
+              <div id="reddit-download-inline-progress-fill" class="reddit-download-progress-fill"></div>
+            </div>
+            <div id="reddit-download-inline-items" class="reddit-download-items"></div>
+            <pre id="reddit-download-inline-logs" class="reddit-download-logs reddit-download-logs-inline"></pre>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <div id="reddit-download-modal" class="reddit-download-modal" aria-hidden="true">
+      <div class="reddit-download-backdrop"></div>
+      <div class="reddit-download-panel">
+        <div class="reddit-download-header">
+          <h3>Download Reddit</h3>
+          <button id="reddit-download-stop-btn" type="button">Parar</button>
+          <button id="reddit-download-close-btn" type="button">Fechar</button>
+        </div>
+        <div id="reddit-download-summary" class="reddit-download-summary">Aguardando inicio...</div>
+        <div class="reddit-download-progress-track">
+          <div id="reddit-download-progress-fill" class="reddit-download-progress-fill"></div>
+        </div>
+        <div id="reddit-download-items" class="reddit-download-items"></div>
+        <pre id="reddit-download-logs" class="reddit-download-logs"></pre>
+      </div>
+    </div>
+
+    <script>
+      window.API_BASE = "{{ api_base_url }}";
+      window.DEFAULT_TRANSCODE_CRF = {{ default_transcode_crf }};
+    </script>
+    <script src="/static/admin.js?v=20260401r36"></script>
+  </body>
+</html>
+

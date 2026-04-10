@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Category Gallery</title>
+    <link rel="stylesheet" href="/static/styles.css?v=20260401r15" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <h1>Category Gallery</h1>
+        <p class="subtitle">Thumbnails from selected category</p>
+      </div>
+      <div class="topbar-actions">
+        <a class="topbar-link-btn" href="/admin">Voltar ao Admin</a>
+      </div>
+    </header>
+
+    <main class="gallery-page">
+      <section class="card">
+        <div class="gallery-header-row">
+          <h2 id="category-title"></h2>
+          <span id="gallery-meta" class="categories-meta"></span>
+        </div>
+        <div id="gallery-tools" class="gallery-tools" hidden>
+          <div class="gallery-tools-group">
+            <button id="gallery-delete-category-btn" type="button" class="gallery-danger-btn">Remover todos os videos</button>
+            <span class="gallery-tools-note">Nao remove a categoria/usuario nem bloqueia novos downloads.</span>
+          </div>
+          <div class="gallery-tools-group reddit-period-actions">
+            <select id="gallery-period-select">
+              <option value="1">1 mes</option>
+              <option value="2">2 meses</option>
+              <option value="3">3 meses</option>
+              <option value="6">6 meses</option>
+              <option value="12">1 ano</option>
+            </select>
+            <button id="gallery-period-download-btn" type="button" class="btn-reddit-download">Baixar periodo</button>
+          </div>
+        </div>
+        <div id="gallery-status" class="gallery-status">Carregando...</div>
+        <div id="thumb-grid" class="thumb-grid"></div>
+        <div class="gallery-actions">
+          <a href="/admin">Voltar</a>
+        </div>
+      </section>
+    </main>
+
+    <div id="video-modal" class="video-modal" aria-hidden="true">
+      <div class="video-modal-backdrop" data-close="true"></div>
+      <div class="video-modal-panel">
+        <button id="video-modal-close" class="video-modal-close" type="button">Fechar</button>
+        <div id="video-speed-indicator" class="video-speed-indicator" aria-live="polite">1x</div>
+        <div id="favorite-splash" class="favorite-splash" aria-hidden="true">
+          <span class="favorite-splash-heart heart-main">&#10084;</span>
+          <span class="favorite-splash-heart heart-1">&#10084;</span>
+          <span class="favorite-splash-heart heart-2">&#10084;</span>
+          <span class="favorite-splash-heart heart-3">&#10084;</span>
+          <span class="favorite-splash-heart heart-4">&#10084;</span>
+          <span class="favorite-splash-heart heart-5">&#10084;</span>
+        </div>
+        <video id="video-modal-player" class="video-modal-player" playsinline></video>
+        <div id="video-modal-caption" class="video-modal-caption"></div>
+      </div>
+    </div>
+
+    <div id="reddit-download-modal" class="reddit-download-modal" aria-hidden="true">
+      <div class="reddit-download-backdrop"></div>
+      <div class="reddit-download-panel">
+        <div class="reddit-download-header">
+          <h3>Download Reddit</h3>
+          <button id="reddit-download-stop-btn" type="button">Parar</button>
+          <button id="reddit-download-close-btn" type="button">Fechar</button>
+        </div>
+        <div id="reddit-download-summary" class="reddit-download-summary">Aguardando inicio...</div>
+        <div class="reddit-download-progress-track">
+          <div id="reddit-download-progress-fill" class="reddit-download-progress-fill"></div>
+        </div>
+        <div id="reddit-download-items" class="reddit-download-items"></div>
+        <pre id="reddit-download-logs" class="reddit-download-logs"></pre>
+      </div>
+    </div>
+
+    <script>
+      window.API_BASE = {{ api_base_url | tojson }};
+      window.CATEGORY_NAME = {{ category_name | tojson }};
+      window.FAVORITES_MODE = {{ favorites_mode | tojson }};
+      window.RECENTS_MODE = {{ recent_mode | tojson }};
+      window.SECRET_MODE = {{ secret_mode | tojson }};
+    </script>
+    <script src="/static/category_gallery.js?v=20260401r24"></script>
+  </body>
+</html>

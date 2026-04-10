@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Channel Player</title>
+    <link rel="stylesheet" href="/static/styles.css?v=20260329r11" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <h1>Play Channel</h1>
+        <p class="subtitle">Canal continuo por categoria usando os videos ja processados</p>
+      </div>
+      <div class="topbar-actions">
+        <a class="topbar-link-btn" href="/admin">Voltar ao Admin</a>
+        <a id="channel-gallery-link" class="topbar-link-btn" href="#">Abrir Galeria</a>
+        <a id="channel-m3u-link" class="topbar-link-btn" href="#" download>Baixar M3U</a>
+        <a id="channel-live-link" class="topbar-link-btn" href="#" target="_blank" rel="noopener">Canal HLS</a>
+      </div>
+    </header>
+
+    <main class="grid">
+      <section class="card">
+        <div class="channel-player-header">
+          <div>
+            <h2 id="channel-title">Canal</h2>
+            <div id="channel-meta" class="categories-meta"></div>
+          </div>
+          <div class="channel-player-actions">
+            <button id="channel-prev-btn" type="button">Anterior</button>
+            <button id="channel-next-btn" type="button">Proximo</button>
+            <label class="channel-toggle"><input id="channel-shuffle-toggle" type="checkbox" /> Shuffle</label>
+          </div>
+        </div>
+
+        <div id="channel-status" class="reddit-status">Carregando canal...</div>
+        <div class="channel-player-layout">
+          <div class="channel-player-stage">
+            <video id="channel-player" class="channel-page-player" controls autoplay playsinline></video>
+            <div id="channel-now-playing" class="channel-now-playing">Nenhum item carregado.</div>
+          </div>
+          <aside class="channel-playlist-panel">
+            <div class="channel-playlist-title">Playlist</div>
+            <div id="channel-playlist" class="channel-playlist"></div>
+          </aside>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      window.API_BASE = {{ api_base_url | tojson }};
+      window.CHANNEL_KEY = {{ channel_key | tojson }};
+      window.CHANNEL_NAME = {{ channel_name | tojson }};
+    </script>
+    <script src="/static/channel_player.js?v=20260329r1"></script>
+  </body>
+</html>

@@ -1,0 +1,29 @@
+<resources>
+    <string name="app_name">Media Library Feed</string>
+    <string name="server_url_hint">http://192.168.0.10:8000/api/</string>
+    <string name="save">Salvar</string>
+    <string name="test_connection">Testar conexao</string>
+    <string name="server_config_title">Configuracao do backend</string>
+    <string name="open_settings">Servidor</string>
+    <string name="no_server_configured">Configure o endereco do backend para iniciar o feed.</string>
+    <string name="tap_to_retry">Toque para tentar novamente</string>
+
+    <string name="provider_gate_title">Cadastro de Prestador</string>
+    <string name="provider_gate_subtitle">Tela inicial fake para cadastro. Salve os dados para continuar.</string>
+    <string name="provider_name_hint">Nome do prestador</string>
+    <string name="provider_doc_hint">CPF ou CNPJ (fake)</string>
+    <string name="provider_service_hint">Servico principal (fake)</string>
+    <string name="provider_name_required">Informe o nome do prestador.</string>
+    <string name="provider_access_granted">Cadastro salvo. Acesso liberado.</string>
+    <string name="provider_access_denied">Cadastro salvo, mas o acesso ao feed foi bloqueado.</string>
+    <string name="category_picker_title">Escolha a categoria</string>
+    <string name="category_picker_subtitle">Modo categories: selecione a categoria para abrir o feed.</string>
+    <string name="category_picker_retry">Atualizar categorias</string>
+    <string name="category_picker_choose">Toque em uma categoria para abrir o feed filtrado.</string>
+    <string name="category_picker_empty">Nenhuma categoria disponivel no feed.</string>
+    <string name="category_picker_load_failed">Falha ao carregar categorias.</string>
+    <string name="category_picker_save_failed">Falha ao salvar categoria selecionada.</string>
+    <string name="category_picker_count_format">%1$d videos prontos</string>
+    <string name="favorite_icon">Video favorito</string>
+    <string name="delete_video">Remover video permanentemente</string>
+</resources>
