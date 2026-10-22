@@ -1,0 +1,12 @@
+# Sobe o feed em 127.0.0.1:8088.
+# O proxy da VPS publica https://secretfeed.insta-ads.online nesse porto.
+# DNS: A secretfeed -> 179.199.144.9
+# As midias assinadas continuam em https://secret.insta-ads.online
+services:
+  secretfeed:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8088:8088"
+    env_file:
+      - .env

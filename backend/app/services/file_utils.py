@@ -15,6 +15,27 @@ def is_video_path(path: str | Path) -> bool:
     return ext in set(get_settings().allowed_video_extensions)
 
 
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
+
+
+def is_image_path(path: str | Path) -> bool:
+    ext = Path(path).suffix.lower()
+    return ext in IMAGE_EXTENSIONS
+
+
+def guess_image_mime_type(path: str | Path) -> str:
+    ext = Path(path).suffix.lower()
+    mapping = {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".webp": "image/webp",
+        ".gif": "image/gif",
+        ".bmp": "image/bmp",
+    }
+    return mapping.get(ext, "application/octet-stream")
+
+
 def quick_fingerprint(path: str | Path) -> str:
     path_obj = Path(path)
     file_size = path_obj.stat().st_size

@@ -1,0 +1,12 @@
+# Liga o feed na rede do Caddy da VPS (deploy_instaads).
+# Uso: docker compose -f docker-compose.yml -f docker-compose.vps.yml up -d --build
+services:
+  secretfeed:
+    container_name: secretfeed
+    networks:
+      - instaads
+
+networks:
+  instaads:
+    external: true
+    name: deploy_instaads

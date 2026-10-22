@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="theme-color" content="#000000">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>Backup</title>
+  <link rel="stylesheet" href="/backup/backup.css?v=2">
+</head>
+<body>
+  <header class="top">
+    <a class="back" href="/">Feed</a>
+    <h1>Backup</h1>
+    <a class="back" href="/backup/view">Ver fotos</a>
+  </header>
+  <main class="page">
+    <p class="lead">Envie fotos e videos do celular para o backup no servidor.</p>
+    <label class="pick">
+      <input id="picker" type="file" accept="image/*,video/*" multiple>
+      <span>Escolher fotos</span>
+    </label>
+    <div class="actions">
+      <button id="upload" type="button" disabled>Enviar</button>
+      <button id="retry" type="button" hidden>Tentar falhas</button>
+      <button id="clear" type="button" hidden>Limpar</button>
+    </div>
+    <p class="summary" id="summary" hidden></p>
+    <ul class="queue" id="queue"></ul>
+  </main>
+  <script src="/backup/backup.js?v=2"></script>
+</body>
+</html>

@@ -16,6 +16,7 @@ from pystray import Icon, Menu, MenuItem
 
 
 LOGGER_NAME = "tray"
+TRAY_ICON_FILENAME = "media_library_tray.ico"
 
 
 def resolve_backend_workdir() -> Path:
@@ -96,6 +97,17 @@ def create_tray_image() -> Image.Image:
     return image
 
 
+def resolve_tray_icon_path() -> Path | None:
+    candidates = [
+        Path(__file__).resolve().parent / TRAY_ICON_FILENAME,
+        Path(getattr(sys, "_MEIPASS", "")) / TRAY_ICON_FILENAME,
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
 class BackendTrayApp:
     def __init__(self, host: str, port: int, open_browser_on_start: bool, log_file: Path) -> None:
         self.host = host
@@ -110,11 +122,12 @@ class BackendTrayApp:
         self._server_thread: threading.Thread | None = None
         self._shutdown = threading.Event()
         self._startup_error: str | None = None
+        self._tray_icon_image = self._load_tray_icon_image()
 
         self.icon = Icon(
             name="MediaLibraryBackend",
             title="Media Library Backend",
-            icon=create_tray_image(),
+            icon=self._tray_icon_image,
             menu=Menu(
                 MenuItem("Abrir Admin", self._open_admin),
                 MenuItem("Abrir API Docs", self._open_docs),
@@ -128,7 +141,20 @@ class BackendTrayApp:
         self._start_backend()
         if self.open_browser_on_start:
             threading.Thread(target=self._open_admin_with_delay, daemon=True).start()
-        self.icon.run()
+        self.icon.run(setup=self._setup_tray_icon)
+
+    def _load_tray_icon_image(self) -> Image.Image:
+        icon_path = resolve_tray_icon_path()
+        if icon_path is not None:
+            try:
+                return Image.open(icon_path).convert("RGBA")
+            except Exception:  # noqa: BLE001
+                self.logger.warning("Failed to load tray icon from %s; using generated fallback", icon_path)
+        return create_tray_image()
+
+    @staticmethod
+    def _setup_tray_icon(icon: Icon) -> None:
+        icon.visible = True
 
     def _start_backend(self) -> None:
         if self._server_thread and self._server_thread.is_alive():
@@ -244,9 +270,17 @@ class BackendTrayApp:
 
 
 def parse_args() -> argparse.Namespace:
+    from app.core.config import get_settings
+
+    settings = get_settings()
     parser = argparse.ArgumentParser(description="Media Library Backend Tray")
-    parser.add_argument("--host", default="0.0.0.0", help="Backend host bind (default: 0.0.0.0)")
-    parser.add_argument("--port", type=int, default=8000, help="Backend port (default: 8000)")
+    parser.add_argument("--host", default=settings.backend_host, help="Backend host bind")
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=settings.backend_port,
+        help=f"Backend port (default: {settings.backend_port})",
+    )
     parser.add_argument(
         "--no-open-browser",
         action="store_true",

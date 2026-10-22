@@ -91,11 +91,15 @@ class JobWorker:
         process_fn: Callable[[Session, Job], None],
         workers: int = 1,
         poll_interval_seconds: float = 1.0,
+        job_types: set[str] | None = None,
+        exclude_job_types: set[str] | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._process_fn = process_fn
         self._workers = workers
         self._poll_interval_seconds = poll_interval_seconds
+        self._job_types = job_types
+        self._exclude_job_types = exclude_job_types
         self._tasks: list[asyncio.Task] = []
         self._running = False
         self._paused = False
@@ -158,9 +162,12 @@ class JobWorker:
 
     def _claim_next_job(self) -> Job | None:
         with self._session_factory() as session:
-            job = session.scalar(
-                select(Job).where(Job.status == "pending").order_by(Job.created_at.asc()).limit(1)
-            )
+            stmt = select(Job).where(Job.status == "pending")
+            if self._job_types:
+                stmt = stmt.where(Job.type.in_(self._job_types))
+            if self._exclude_job_types:
+                stmt = stmt.where(Job.type.notin_(self._exclude_job_types))
+            job = session.scalar(stmt.order_by(Job.created_at.asc()).limit(1))
             if not job:
                 return None
             job.status = "running"

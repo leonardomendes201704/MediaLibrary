@@ -3,6 +3,7 @@ const PAGE_SIZE = 24;
 const FAVORITE_HEART_MIN = 5;
 const SEARCH_DEBOUNCE_MS = 150;
 const SORT_STORAGE_KEY = "media_catalog_sort_v1";
+const RETURN_STATE_KEY = "media_catalog_return_v1";
 
 let collections = [];
 let regularCategories = [];
@@ -15,6 +16,8 @@ let searchTimer = null;
 
 async function api(path, options = {}) {
   const response = await fetch(`${API}${path}`, {
+    // Back/forward loads otherwise reuse the cached JSON and miss covers set in the player.
+    cache: "no-store",
     headers: { "Content-Type": "application/json" },
     ...options,
   });
@@ -94,7 +97,7 @@ function normalizeCategory(item) {
     imageCount,
     favoritesCount: toCount(item?.favorites_count ?? item?.favoritesCount),
     watchedCount: toCount(item?.watched_count ?? item?.watchedCount),
-    href: `/admin/category?name=${encodeURIComponent(category)}${imagesOnly ? "&images=1" : ""}`,
+    href: `/admin/category?name=${encodeURIComponent(category)}${imagesOnly ? "&images=1" : ""}&play=1`,
     coverUrl: safe(item?.cover_url ?? item?.coverUrl).trim(),
     hue: hashString(category.toLowerCase()) % 360,
   };
@@ -108,7 +111,7 @@ function buildCollections(stats) {
     {
       category: "Favoritos",
       count: favorites,
-      href: "/admin/category?favorites=1&name=Favoritos",
+      href: "/admin/category?favorites=1&name=Favoritos&play=1",
       icon: "fa-heart",
       hue: 356,
       isCollection: true,
@@ -116,7 +119,7 @@ function buildCollections(stats) {
     {
       category: "Meus Salvos",
       count: toCount(stats?.videos_reddit_saved) + toCount(stats?.images_reddit_saved),
-      href: "/admin/category?saved=1&name=Meus%20Salvos",
+      href: "/admin/category?saved=1&name=Meus%20Salvos&play=1",
       icon: "fa-bookmark",
       hue: 38,
       isCollection: true,
@@ -124,7 +127,7 @@ function buildCollections(stats) {
     {
       category: "Nao vistos",
       count: Math.max(0, ready - favorites - watchedNotFavorited),
-      href: "/admin/category?secret=1&name=Nao%20vistos",
+      href: "/admin/category?secret=1&name=Nao%20vistos&play=1",
       icon: "fa-eye-slash",
       hue: 205,
       isCollection: true,
@@ -132,7 +135,7 @@ function buildCollections(stats) {
     {
       category: "Recentes",
       count: Math.max(0, ready - favorites),
-      href: "/admin/category?recent=1&name=Recentes",
+      href: "/admin/category?recent=1&name=Recentes&play=1",
       icon: "fa-clock",
       hue: 150,
       isCollection: true,
@@ -175,7 +178,7 @@ function posterCard(item) {
     ? `<img class="catalog-cover-img" src="${escapeHtml(coverUrl)}" alt="" loading="lazy" />`
     : "";
   return `
-    <a class="catalog-card${item.isCollection ? " catalog-card-collection" : ""}" href="${escapeHtml(item.href)}" title="${escapeHtml(item.category)}" style="--poster-hue: ${item.hue}">
+    <a class="catalog-card${item.isCollection ? " catalog-card-collection" : ""}" href="${escapeHtml(item.href)}" title="${escapeHtml(item.category)}" data-category="${escapeHtml(item.category)}" style="--poster-hue: ${item.hue}">
       <div class="catalog-poster">
         ${coverPlaceholder(item)}
         ${cover}
@@ -292,9 +295,56 @@ function renderCatalog() {
   renderNextPage();
 }
 
+function saveReturnState() {
+  try {
+    window.sessionStorage.setItem(RETURN_STATE_KEY, JSON.stringify({
+      scrollY: Math.round(window.scrollY),
+      renderedCount,
+      query: safe(document.getElementById("catalog-search")?.value),
+    }));
+  } catch (error) {
+    // Restoring the position is a convenience only.
+  }
+}
+
+function readReturnState() {
+  try {
+    const navigation = performance.getEntriesByType("navigation")[0];
+    if (!navigation || navigation.type !== "back_forward") return null;
+    const parsed = JSON.parse(window.sessionStorage.getItem(RETURN_STATE_KEY) || "null");
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch (error) {
+    return null;
+  }
+}
+
+// Coming back from the player reloads this page when the bfcache is unavailable:
+// re-render as many cards as before and scroll back to where the cover was clicked.
+function restoreReturnState(state) {
+  const searchEl = document.getElementById("catalog-search");
+  if (searchEl && typeof state.query === "string" && state.query) {
+    searchEl.value = state.query;
+    renderCatalog();
+  }
+  const targetCount = Math.max(0, Number(state.renderedCount) || 0);
+  const total = visibleRegular.length + visibleUsers.length;
+  while (renderedCount < targetCount && renderedCount < total) {
+    renderNextPage();
+  }
+  window.scrollTo(0, Math.max(0, Number(state.scrollY) || 0));
+}
+
 function bindControls() {
   const searchEl = document.getElementById("catalog-search");
   const sortEl = document.getElementById("catalog-sort");
+  if ("scrollRestoration" in window.history) {
+    window.history.scrollRestoration = "manual";
+  }
+  document.querySelector(".catalog-main")?.addEventListener("click", (event) => {
+    if (event.target instanceof Element && event.target.closest("a.catalog-card")) {
+      saveReturnState();
+    }
+  });
   if (sortEl) {
     const storedSort = readStoredSort();
     if (Array.from(sortEl.options).some((option) => option.value === storedSort)) {
@@ -337,10 +387,45 @@ async function loadCatalog() {
     regularCategories = list.filter((item) => !isUserCategoryName(item.category));
     userCategories = list.filter((item) => isUserCategoryName(item.category));
     renderCatalog();
+    const returnState = readReturnState();
+    if (returnState) {
+      restoreReturnState(returnState);
+    }
   } catch (error) {
     setStatus(`Falha ao carregar catalogo: ${safe(error.message)}`, true);
   }
 }
 
+// Covers set with C in the player only show up here after a fresh /feed/categories read.
+async function refreshCoversInPlace() {
+  let categories;
+  try {
+    categories = await api("/feed/categories");
+  } catch (error) {
+    return;
+  }
+  const coverByName = new Map(
+    (Array.isArray(categories) ? categories : []).map((item) => [
+      safe(item?.category).trim(),
+      safe(item?.cover_url ?? item?.coverUrl).trim(),
+    ]),
+  );
+  for (const item of [...regularCategories, ...userCategories]) {
+    const coverUrl = coverByName.get(item.category) || "";
+    if (coverUrl === item.coverUrl) continue;
+    item.coverUrl = coverUrl;
+    const cardEl = document.querySelector(`.catalog-card[data-category="${CSS.escape(item.category)}"]`);
+    if (cardEl) {
+      cardEl.outerHTML = posterCard(item);
+    }
+  }
+}
+
 bindControls();
 loadCatalog();
+// Returning from the player via history.back() restores this page from the bfcache without reloading it.
+window.addEventListener("pageshow", (event) => {
+  if (event.persisted) {
+    refreshCoversInPlace();
+  }
+});

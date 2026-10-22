@@ -1,13 +1,15 @@
 import hashlib
 import re
+import time
 from collections import Counter
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Literal
 
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from app.db.models import Folder, Video
+from app.db.models import Folder, RedditImage, Video
 from app.services.category_blacklist import extract_path_badges, normalize_category_name
 from app.services.feed_service import load_feed
 
@@ -17,12 +19,21 @@ class CategorySummary:
     category: str
     channel_key: str
     count: int
+    video_count: int = 0
+    image_count: int = 0
     favorites_count: int = 0
     watched_count: int = 0
     is_user_category: bool = False
+    latest_at: datetime | None = None
 
 
 CHANNEL_KEY_SLUG_RE = re.compile(r"[^a-z0-9]+")
+_CATEGORY_SUMMARIES_CACHE_TTL_SECONDS = 60.0
+_category_summaries_cache: dict[frozenset[str], tuple[float, list["CategorySummary"]]] = {}
+
+
+def invalidate_category_summaries_cache() -> None:
+    _category_summaries_cache.clear()
 
 
 def is_user_category_name(name: str) -> bool:
@@ -48,13 +59,53 @@ def _normalize_blacklisted_categories(blacklisted_categories: set[str] | None) -
     return normalized
 
 
+def _as_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _category_activity_at(
+    sort_timestamp: datetime | None,
+    processed_at: datetime | None,
+    detected_at: datetime | None,
+) -> datetime | None:
+    candidates = [
+        ts
+        for ts in (
+            _as_utc(sort_timestamp),
+            _as_utc(processed_at),
+            _as_utc(detected_at),
+        )
+        if ts is not None
+    ]
+    if not candidates:
+        return None
+    return max(candidates)
+
+
 def list_category_summaries(
     session: Session,
     blacklisted_categories: set[str] | None = None,
 ) -> list[CategorySummary]:
     normalized_blacklist = _normalize_blacklisted_categories(blacklisted_categories)
+    cache_key = frozenset(normalized_blacklist)
+    now = time.monotonic()
+    cached = _category_summaries_cache.get(cache_key)
+    if cached and (now - cached[0]) < _CATEGORY_SUMMARIES_CACHE_TTL_SECONDS:
+        return cached[1]
+
     rows = session.execute(
-        select(Video.original_path, Video.is_favorite, Video.is_watched)
+        select(
+            Video.original_path,
+            Video.is_favorite,
+            Video.is_watched,
+            Video.sort_timestamp,
+            Video.processed_at,
+            Video.detected_at,
+        )
         .join(Folder, Video.folder_id == Folder.id, isouter=True)
         .where(
             Video.is_deleted.is_(False),
@@ -63,39 +114,91 @@ def list_category_summaries(
         )
     )
 
-    counts: Counter[str] = Counter()
+    video_counts: Counter[str] = Counter()
+    image_counts: Counter[str] = Counter()
     favorites_counts: Counter[str] = Counter()
     watched_counts: Counter[str] = Counter()
     display_names: dict[str, str] = {}
+    latest_at: dict[str, datetime] = {}
 
-    for original_path, is_favorite, is_watched in rows:
-        category, _ = extract_path_badges(str(original_path or ""))
+    for original_path, is_favorite, is_watched, sort_timestamp, processed_at, detected_at in rows:
+        category, _, _ = extract_path_badges(str(original_path or ""))
         display_name = str(category or "").strip()
         normalized_name = normalize_category_name(display_name)
         if not normalized_name or normalized_name in normalized_blacklist:
             continue
 
-        counts[normalized_name] += 1
+        video_counts[normalized_name] += 1
         if is_favorite:
             favorites_counts[normalized_name] += 1
         if is_watched:
             watched_counts[normalized_name] += 1
         display_names.setdefault(normalized_name, display_name)
 
-    return [
+        activity_at = _category_activity_at(sort_timestamp, processed_at, detected_at)
+        if activity_at is not None:
+            previous = latest_at.get(normalized_name)
+            if previous is None or activity_at > previous:
+                latest_at[normalized_name] = activity_at
+
+    image_rows = session.execute(
+        select(
+            RedditImage.original_path,
+            RedditImage.is_favorite,
+            RedditImage.is_watched,
+            RedditImage.sort_timestamp,
+            RedditImage.processed_at,
+            RedditImage.detected_at,
+        ).where(
+            RedditImage.is_deleted.is_(False),
+            RedditImage.status == "ready",
+        )
+    )
+    for original_path, is_favorite, is_watched, sort_timestamp, processed_at, detected_at in image_rows:
+        category, _, _ = extract_path_badges(str(original_path or ""))
+        display_name = str(category or "").strip()
+        normalized_name = normalize_category_name(display_name)
+        if not normalized_name or normalized_name in normalized_blacklist:
+            continue
+
+        image_counts[normalized_name] += 1
+        if is_favorite:
+            favorites_counts[normalized_name] += 1
+        if is_watched:
+            watched_counts[normalized_name] += 1
+        display_names.setdefault(normalized_name, display_name)
+
+        activity_at = _category_activity_at(sort_timestamp, processed_at, detected_at)
+        if activity_at is not None:
+            previous = latest_at.get(normalized_name)
+            if previous is None or activity_at > previous:
+                latest_at[normalized_name] = activity_at
+
+    all_keys = set(video_counts) | set(image_counts)
+    epoch = datetime.fromtimestamp(0, tz=timezone.utc)
+
+    summaries = [
         CategorySummary(
             category=display_names[key],
             channel_key=channel_key_for_category(display_names[key]),
-            count=count,
+            count=int(video_counts[key] + image_counts[key]),
+            video_count=int(video_counts[key]),
+            image_count=int(image_counts[key]),
             favorites_count=favorites_counts[key],
             watched_count=watched_counts[key],
             is_user_category=is_user_category_name(display_names[key]),
+            latest_at=latest_at.get(key),
         )
-        for key, count in sorted(
-            counts.items(),
-            key=lambda item: (-item[1], display_names[item[0]].lower()),
+        for key in sorted(
+            all_keys,
+            key=lambda item: (
+                -(latest_at.get(item, epoch).timestamp()),
+                display_names[item].lower(),
+            ),
         )
     ]
+    _category_summaries_cache[cache_key] = (now, summaries)
+    return summaries
 
 
 def load_channel_videos(

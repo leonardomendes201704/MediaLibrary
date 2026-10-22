@@ -13,6 +13,7 @@ backend/media_library.db.bak-*
 backend/media_library.db-journal
 backend/media_optimized/
 backend/media_thumbs/
+backend/media_category_covers/
 backend/channel_hls/
 backend/reddit_downloads/
 backend/video_vod/
@@ -20,12 +21,14 @@ backend/__pycache__/
 backend/hls-test.m3u8
 media_optimized/
 media_thumbs/
+media_category_covers/
 channel_hls/
 reddit_downloads/
 vod-test.m3u
 dist/
 build/
 backend/.env
+vps-feed/.env
 tools/gradle/
 
 # Android
@@ -38,3 +41,9 @@ android-app/**/build/
 Thumbs.db
 .idea/
 .vscode/
+
+# Local-only files
+.env
+backend/media_library.db-shm
+backend/media_library.db-wal
+tools/

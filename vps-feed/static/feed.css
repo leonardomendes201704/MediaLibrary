@@ -1,0 +1,180 @@
+* { box-sizing: border-box; }
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: #050505;
+  color: #fff;
+  overflow: hidden;
+  font-family: system-ui, sans-serif;
+}
+
+.stage {
+  height: 100dvh;
+  width: min(100vw, 480px);
+  margin: 0 auto;
+  overflow-y: scroll;
+  scroll-snap-type: y mandatory;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+  background: #000;
+  scrollbar-width: none;
+}
+
+.stage::-webkit-scrollbar { display: none; }
+
+.slide {
+  position: relative;
+  height: 100dvh;
+  scroll-snap-align: start;
+  scroll-snap-stop: always;
+  background: #000;
+}
+
+.slide video,
+.slide img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  background: #000;
+}
+
+.progress {
+  position: absolute;
+  z-index: 2;
+  left: 0;
+  right: 0;
+  top: env(safe-area-inset-top);
+  height: 3px;
+  background: rgba(255, 255, 255, 0.28);
+}
+
+.progress > span {
+  display: block;
+  height: 100%;
+  width: 0%;
+  background: #fff;
+}
+
+.sound {
+  position: absolute;
+  z-index: 2;
+  top: calc(14px + env(safe-area-inset-top));
+  right: 14px;
+  width: 44px;
+  height: 44px;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+}
+
+.sound svg {
+  width: 22px;
+  height: 22px;
+  display: block;
+}
+
+.subreddit {
+  position: absolute;
+  z-index: 3;
+  top: calc(10px + env(safe-area-inset-top));
+  right: 14px;
+  left: 14px;
+  margin: 0;
+  font-weight: 900;
+  font-size: 20px;
+  line-height: 1.15;
+  text-align: right;
+  color: #fff;
+  -webkit-text-stroke: 3px #000;
+  paint-order: stroke fill;
+  pointer-events: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.slide:has(.subreddit) .sound {
+  top: calc(44px + env(safe-area-inset-top));
+}
+
+.status {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  margin: 0;
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 15px;
+  text-align: center;
+}
+
+.status[hidden] { display: none; }
+
+.status { pointer-events: none; }
+
+.count {
+  position: fixed;
+  z-index: 5;
+  left: max(14px, calc(50vw - 226px));
+  bottom: calc(18px + env(safe-area-inset-bottom));
+  height: 48px;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  font-weight: 900;
+  font-size: 28px;
+  line-height: 1;
+  color: #fff;
+  -webkit-text-stroke: 4px #000;
+  paint-order: stroke fill;
+  pointer-events: none;
+}
+
+.refresh {
+  position: fixed;
+  z-index: 5;
+  right: max(14px, calc(50vw - 226px));
+  bottom: calc(18px + env(safe-area-inset-bottom));
+  width: 48px;
+  height: 48px;
+  border: 0;
+  border-radius: 999px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.55);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+}
+
+.refresh svg {
+  width: 22px;
+  height: 22px;
+  display: block;
+}
+
+html:fullscreen,
+html:-webkit-full-screen {
+  background: #000;
+}
+
+html:fullscreen .stage,
+html:-webkit-full-screen .stage {
+  width: 100%;
+  height: 100%;
+}
+
+html:fullscreen .count,
+html:-webkit-full-screen .count {
+  left: max(14px, env(safe-area-inset-left));
+}
+
+html:fullscreen .refresh,
+html:-webkit-full-screen .refresh {
+  right: max(14px, env(safe-area-inset-right));
+}

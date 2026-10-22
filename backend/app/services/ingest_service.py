@@ -2,13 +2,13 @@ import logging
 import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from sqlalchemy import Select, delete, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import Settings, get_settings
-from app.db.models import ErrorLog, FeedState, Folder, Job, RedditMediaHistory, Video
+from app.db.models import ErrorLog, FeedState, Folder, Job, RedditImage, RedditMediaHistory, Video
 from app.services.category_blacklist import extract_download_root, extract_path_badges, normalize_category_name
 from app.services.ffmpeg_service import FFmpegService
 from app.services.file_utils import is_video_path, normalize_path, path_exists, quick_fingerprint
@@ -34,6 +34,7 @@ class IngestService:
         self._ffmpeg = ffmpeg_service
         self._jobs = job_service
         self._settings = settings or get_settings()
+        self.on_video_ready: Callable[[Session, Video], None] | None = None
 
     def enqueue_ingest(self, source_path: str, folder_id: int | None, reason: str = "watcher") -> int:
         normalized = normalize_path(source_path)
@@ -55,22 +56,31 @@ class IngestService:
             )
             return job.id
 
+    def ensure_media_tools_available(self) -> None:
+        self._ffmpeg.ensure_available()
+
     def process_source_now(
         self,
         source_path: str,
         folder_id: int | None = None,
         force: bool = True,
         delete_source_after_transcode: bool | None = None,
+        *,
+        is_reddit_saved: bool = False,
     ) -> int | None:
         normalized = normalize_path(source_path)
         with self._session_factory() as session:
-            self._process_path(
-                session=session,
-                source_path=normalized,
-                folder_id=folder_id,
-                force=force,
-                delete_source_after_transcode=delete_source_after_transcode,
-            )
+            try:
+                self._process_path(
+                    session=session,
+                    source_path=normalized,
+                    folder_id=folder_id,
+                    force=force,
+                    delete_source_after_transcode=delete_source_after_transcode,
+                    is_reddit_saved=is_reddit_saved,
+                )
+            except FileNotFoundError as exc:
+                raise self._build_missing_media_tools_error(normalized) from exc
             video = session.scalar(select(Video).where(Video.original_path == normalized))
             return video.id if video else None
 
@@ -87,6 +97,7 @@ class IngestService:
                 folder_id=folder_id,
                 force=False,
                 delete_source_after_transcode=None,
+                is_reddit_saved=bool(payload.get("is_reddit_saved")),
             )
             return
 
@@ -109,6 +120,7 @@ class IngestService:
             folder_id=video.folder_id,
             force=True,
             delete_source_after_transcode=None,
+            is_reddit_saved=bool(video.is_reddit_saved),
         )
 
     def _process_path(
@@ -118,6 +130,8 @@ class IngestService:
         folder_id: int | None,
         force: bool,
         delete_source_after_transcode: bool | None,
+        *,
+        is_reddit_saved: bool = False,
     ) -> None:
         normalized = normalize_path(source_path)
         source = Path(normalized)
@@ -148,6 +162,8 @@ class IngestService:
                 renamed.is_deleted = False
                 renamed.status = "processing"
                 renamed.processing_error = None
+                if is_reddit_saved:
+                    renamed.is_reddit_saved = True
                 video = renamed
             else:
                 duplicate = session.scalar(
@@ -181,8 +197,11 @@ class IngestService:
                         bitrate=duplicate.bitrate,
                         processed_at=duplicate.processed_at,
                         sort_timestamp=duplicate.sort_timestamp,
+                        is_reddit_saved=bool(is_reddit_saved or duplicate.is_reddit_saved),
                     )
                     session.add(dup_video)
+                    if is_reddit_saved and not duplicate.is_reddit_saved:
+                        duplicate.is_reddit_saved = True
                     session.commit()
                     return
                 video = Video(
@@ -190,6 +209,7 @@ class IngestService:
                     original_path=normalized,
                     status="processing",
                     detected_at=utcnow(),
+                    is_reddit_saved=bool(is_reddit_saved),
                 )
                 session.add(video)
                 session.flush()
@@ -202,6 +222,8 @@ class IngestService:
                 and abs(video.source_mtime - source_mtime) < 0.0001
                 and path_exists(video.derived_path)
             ):
+                if is_reddit_saved:
+                    video.is_reddit_saved = True
                 video.updated_at = utcnow()
                 session.commit()
                 return
@@ -211,6 +233,8 @@ class IngestService:
             if folder_id is not None:
                 video.folder_id = folder_id
 
+        if is_reddit_saved:
+            video.is_reddit_saved = True
         video.source_size = source_size
         video.source_mtime = source_mtime
         video.source_fingerprint = fingerprint
@@ -263,6 +287,7 @@ class IngestService:
             )
             if serve_files and should_delete_source and video.status == "ready":
                 self._delete_original_source_file(video=video)
+            self._notify_video_ready(session, video)
         except Exception as exc:  # noqa: BLE001
             logger.exception("Failed to process video: %s", normalized)
             self._discard_failed_video(
@@ -281,6 +306,28 @@ class IngestService:
             )
             session.commit()
             raise
+
+    def _notify_video_ready(self, session: Session, video: Video) -> None:
+        callback = self.on_video_ready
+        if callback is None:
+            return
+        try:
+            callback(session, video)
+        except Exception:
+            logger.exception("Failed to schedule MinIO upload for video %s", video.id)
+
+    def _build_missing_media_tools_error(self, source_path: str) -> RuntimeError:
+        missing = self._ffmpeg.missing_binaries()
+        if missing:
+            return RuntimeError(
+                "Nao foi possivel processar o video "
+                f"{source_path} porque faltam dependencias externas: {', '.join(missing)}. "
+                "Instale o FFmpeg e garanta que ffmpeg/ffprobe estejam no PATH "
+                "ou configure FFMPEG_BIN e FFPROBE_BIN."
+            )
+        return RuntimeError(
+            f"Nao foi possivel processar o video {source_path} porque um arquivo necessario nao foi encontrado."
+        )
 
     def _discard_failed_video(
         self,
@@ -459,6 +506,24 @@ class IngestService:
         targets = self._collect_category_video_targets(category_name)
         return self._permanently_delete_targets(targets)
 
+    def count_category_images(self, category_name: str) -> int:
+        return len(self._collect_category_image_targets(category_name))
+
+    def permanently_delete_category_images(self, category_name: str) -> int:
+        targets = self._collect_category_image_targets(category_name)
+        if not targets:
+            return 0
+
+        deleted = 0
+        original_paths: list[str] = []
+        for image_id, original_path in targets:
+            if self.permanently_delete_image(image_id):
+                deleted += 1
+            original_paths.append(original_path)
+
+        self._prune_deleted_category_dirs(original_paths)
+        return deleted
+
     def permanently_delete_all_downloaded_videos(self) -> int:
         targets: list[tuple[int, str]] = []
         download_roots: set[Path] = set()
@@ -484,6 +549,56 @@ class IngestService:
         deleted = self._permanently_delete_targets(targets)
         for download_root in download_roots:
             if self._download_root_has_catalog_videos(download_root):
+                continue
+            self._purge_directory_contents(download_root)
+        return deleted
+
+    def permanently_delete_image(self, image_id: int) -> bool:
+        with self._session_factory() as session:
+            image = session.get(RedditImage, image_id)
+            if not image:
+                return False
+
+            self._delete_file_quietly(path=image.original_path, context="image_original", video_id=image_id)
+            if image.file_path and image.file_path != image.original_path:
+                self._delete_file_quietly(path=image.file_path, context="image_file", video_id=image_id)
+
+            session.delete(image)
+            session.commit()
+            return True
+
+    def permanently_delete_all_downloaded_images(self) -> int:
+        targets: list[tuple[int, str]] = []
+        download_roots: set[Path] = set()
+
+        with self._session_factory() as session:
+            rows = session.execute(
+                select(RedditImage.id, RedditImage.original_path).where(
+                    RedditImage.is_deleted.is_(False),
+                    RedditImage.is_favorite.is_(False),
+                )
+            ).all()
+
+        for image_id, original_path in rows:
+            normalized_path = normalize_path(str(original_path or ""))
+            if not normalized_path:
+                continue
+            download_root = extract_download_root(normalized_path, self._settings.reddit_download_dir)
+            if download_root is None:
+                continue
+            targets.append((int(image_id), normalized_path))
+            download_roots.add(download_root)
+
+        deleted = 0
+        original_paths: list[str] = []
+        for image_id, original_path in targets:
+            if self.permanently_delete_image(image_id):
+                deleted += 1
+            original_paths.append(original_path)
+
+        self._prune_deleted_category_dirs(original_paths)
+        for download_root in download_roots:
+            if self._download_root_has_catalog_media(download_root):
                 continue
             self._purge_directory_contents(download_root)
         return deleted
@@ -524,7 +639,16 @@ class IngestService:
                     )
                 ).all()
             )
+            images = list(
+                session.execute(
+                    select(
+                        RedditImage.original_path,
+                        RedditImage.file_path,
+                    )
+                ).all()
+            )
             deleted_videos = len(videos)
+            deleted_images = len(images)
             deleted_jobs = int(session.scalar(select(func.count(Job.id))) or 0)
             deleted_error_logs = int(session.scalar(select(func.count(ErrorLog.id))) or 0)
             deleted_feed_states = int(session.scalar(select(func.count(FeedState.id))) or 0)
@@ -533,6 +657,11 @@ class IngestService:
             paths_to_delete: set[str] = set()
             for original_path, derived_path, thumbnail_path in videos:
                 for raw_path in (original_path, derived_path, thumbnail_path):
+                    normalized = normalize_path(str(raw_path or "").strip())
+                    if normalized:
+                        paths_to_delete.add(normalized)
+            for original_path, file_path in images:
+                for raw_path in (original_path, file_path):
                     normalized = normalize_path(str(raw_path or "").strip())
                     if normalized:
                         paths_to_delete.add(normalized)
@@ -546,6 +675,7 @@ class IngestService:
             session.execute(delete(FeedState))
             session.execute(delete(ErrorLog))
             session.execute(delete(RedditMediaHistory))
+            session.execute(delete(RedditImage))
             session.execute(delete(Video))
             for folder in session.scalars(select(Folder)):
                 folder.last_scan_at = None
@@ -553,6 +683,7 @@ class IngestService:
 
         return {
             "deleted_videos": deleted_videos,
+            "deleted_images": deleted_images,
             "deleted_jobs": deleted_jobs,
             "deleted_error_logs": deleted_error_logs,
             "deleted_feed_states": deleted_feed_states,
@@ -633,10 +764,25 @@ class IngestService:
         with self._session_factory() as session:
             rows = session.execute(select(Video.id, Video.original_path)).all()
             for video_id, original_path in rows:
-                category, _ = extract_path_badges(str(original_path or ""))
+                category, _, _ = extract_path_badges(str(original_path or ""))
                 if normalize_category_name(category or "") != normalized_target:
                     continue
                 targets.append((int(video_id), str(original_path or "")))
+        return targets
+
+    def _collect_category_image_targets(self, category_name: str) -> list[tuple[int, str]]:
+        normalized_target = normalize_category_name(category_name)
+        if not normalized_target:
+            return []
+
+        targets: list[tuple[int, str]] = []
+        with self._session_factory() as session:
+            rows = session.execute(select(RedditImage.id, RedditImage.original_path)).all()
+            for image_id, original_path in rows:
+                category, _, _ = extract_path_badges(str(original_path or ""))
+                if normalize_category_name(category or "") != normalized_target:
+                    continue
+                targets.append((int(image_id), str(original_path or "")))
         return targets
 
     def _permanently_delete_targets(self, targets: list[tuple[int, str]]) -> int:
@@ -708,6 +854,21 @@ class IngestService:
     def _download_root_has_catalog_videos(self, download_root: Path) -> bool:
         with self._session_factory() as session:
             for original_path in session.scalars(select(Video.original_path).where(Video.is_deleted.is_(False))):
+                normalized_path = normalize_path(str(original_path or ""))
+                if not normalized_path:
+                    continue
+                current_root = extract_download_root(normalized_path, self._settings.reddit_download_dir)
+                if current_root == download_root:
+                    return True
+        return False
+
+    def _download_root_has_catalog_media(self, download_root: Path) -> bool:
+        if self._download_root_has_catalog_videos(download_root):
+            return True
+        with self._session_factory() as session:
+            for original_path in session.scalars(
+                select(RedditImage.original_path).where(RedditImage.is_deleted.is_(False))
+            ):
                 normalized_path = normalize_path(str(original_path or ""))
                 if not normalized_path:
                     continue

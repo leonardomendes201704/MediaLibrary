@@ -1,10 +1,13 @@
 @echo off
-setlocal
+setlocal EnableDelayedExpansion
 
 REM Go to repository root (script is in /scripts)
 cd /d "%~dp0.."
 set ROOT_DIR=%CD%
 set BACKEND_DIR=%ROOT_DIR%\backend
+
+if not defined BACKEND_PORT set BACKEND_PORT=8077
+if not defined BACKEND_HOST set BACKEND_HOST=0.0.0.0
 
 set PY_CMD=
 set PY_MAJOR=
@@ -62,30 +65,48 @@ if %PY_MINOR% GEQ 14 (
 echo Python selecionado: %PY_CMD%  ^(%PY_MAJOR%.%PY_MINOR%^)
 
 echo [2/6] Verificando virtualenv...
-if exist ".venv\Scripts\python.exe" (
+set "VENV_PY=%ROOT_DIR%\.venv\Scripts\python.exe"
+
+if exist "%VENV_PY%" (
   set VENV_MAJOR=
   set VENV_MINOR=
-  for /f "tokens=1,2" %%A in ('".venv\Scripts\python.exe" -c "import sys; print(sys.version_info.major, sys.version_info.minor)"') do (
+  for /f "tokens=1,2" %%A in ('"%VENV_PY%" -c "import sys; print(sys.version_info.major, sys.version_info.minor)"') do (
     set VENV_MAJOR=%%A
     set VENV_MINOR=%%B
   )
-  if not "%VENV_MAJOR%.%VENV_MINOR%"=="%PY_MAJOR%.%PY_MINOR%" (
-    echo Virtualenv atual usa Python %VENV_MAJOR%.%VENV_MINOR%.
+  if not defined VENV_MAJOR (
+    echo Virtualenv parece corrompido ^(nao foi possivel ler a versao do Python^).
+    echo Recriando .venv ...
+    call :stop_backend_on_port
+    rmdir /s /q "%ROOT_DIR%\.venv" 2>nul
+  ) else if not "!VENV_MAJOR!.!VENV_MINOR!"=="%PY_MAJOR%.%PY_MINOR%" (
+    echo Virtualenv atual usa Python !VENV_MAJOR!.!VENV_MINOR!.
     echo Recriando .venv com Python %PY_MAJOR%.%PY_MINOR%...
-    rmdir /s /q ".venv"
+    call :stop_backend_on_port
+    rmdir /s /q "%ROOT_DIR%\.venv" 2>nul
   )
 )
 
-if not exist ".venv\Scripts\python.exe" (
+if not exist "%VENV_PY%" (
   echo Criando virtualenv em .venv ...
-  %PY_CMD% -m venv .venv
+  %PY_CMD% -m venv "%ROOT_DIR%\.venv"
   if errorlevel 1 (
     echo Falha ao criar virtualenv.
     exit /b 1
   )
 )
 
-set VENV_PY=%ROOT_DIR%\.venv\Scripts\python.exe
+goto :after_venv_setup
+
+:stop_backend_on_port
+echo Encerrando instancias antigas do Media Library na porta %BACKEND_PORT%...
+for /f "tokens=5" %%P in ('netstat -aon ^| findstr ":%BACKEND_PORT%" ^| findstr "LISTENING"') do (
+  taskkill /PID %%P /F >nul 2>&1
+)
+timeout /t 2 /nobreak >nul
+exit /b 0
+
+:after_venv_setup
 
 echo [3/6] Verificando dependencias...
 "%VENV_PY%" -c "import fastapi, uvicorn, sqlalchemy, watchdog, pydantic" >nul 2>&1
@@ -107,16 +128,17 @@ if not exist "%BACKEND_DIR%\.env" (
 )
 
 echo [5/6] Abrindo admin...
-echo API:   http://127.0.0.1:8000/docs
-echo Admin: http://127.0.0.1:8000/admin
-start "" powershell -NoProfile -Command "Start-Sleep -Seconds 5; Start-Process 'http://127.0.0.1:8000/admin'"
+echo API:   http://127.0.0.1:%BACKEND_PORT%/docs
+echo Admin: http://127.0.0.1:%BACKEND_PORT%/admin
+start "" powershell -NoProfile -Command "Start-Sleep -Seconds 5; Start-Process 'http://127.0.0.1:%BACKEND_PORT%/admin'"
 
-echo [6/6] Iniciando backend...
+echo [6/6] Iniciando backend na porta %BACKEND_PORT%...
 if not exist "%BACKEND_DIR%" (
   echo Pasta backend nao encontrada em: %BACKEND_DIR%
   exit /b 1
 )
+call :stop_backend_on_port
 cd /d "%BACKEND_DIR%"
-"%VENV_PY%" -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+"%VENV_PY%" -m uvicorn app.main:app --host %BACKEND_HOST% --port %BACKEND_PORT% --reload
 
 endlocal

@@ -15,7 +15,131 @@ let notesDirty = false;
 let redditSubscriptions = [];
 let redditFilter = "";
 let redditDownloadPollTimer = null;
+let redditSubscriptionsLoadSeq = 0;
+let redditSubscriptionsLoadInFlight = false;
+let redditDownloadStartInFlight = false;
 let redditAutoToggleRequestInFlight = false;
+let redditAutoImageToggleRequestInFlight = false;
+let redditImageCountRequestInFlight = false;
+let redditSavedSyncStartInFlight = false;
+let cachedMediaOutputDir = "";
+let copyMediaOutputPathResetTimer = null;
+
+function setCachedMediaOutputDir(pathValue) {
+  const path = String(pathValue || "").trim();
+  cachedMediaOutputDir = path;
+  const button = document.getElementById("copy-media-output-path");
+  if (!button) {
+    return;
+  }
+  button.title = path || "Caminho ainda nao carregado";
+  button.disabled = !path;
+}
+
+async function copyTextToClipboard(text) {
+  const value = String(text || "");
+  if (!value) {
+    throw new Error("Caminho vazio");
+  }
+  if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = value;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  document.body.appendChild(textarea);
+  textarea.select();
+  const ok = document.execCommand("copy");
+  document.body.removeChild(textarea);
+  if (!ok) {
+    throw new Error("Falha ao copiar");
+  }
+}
+
+async function copyMediaOutputPath() {
+  const button = document.getElementById("copy-media-output-path");
+  if (!button) {
+    return;
+  }
+  try {
+    if (!cachedMediaOutputDir) {
+      const health = await api("/health");
+      setCachedMediaOutputDir(health?.media_output_dir);
+    }
+    if (!cachedMediaOutputDir) {
+      throw new Error("Caminho nao disponivel");
+    }
+    await copyTextToClipboard(cachedMediaOutputDir);
+    const previousLabel = button.textContent;
+    button.textContent = "Copiado!";
+    if (copyMediaOutputPathResetTimer) {
+      clearTimeout(copyMediaOutputPathResetTimer);
+    }
+    copyMediaOutputPathResetTimer = setTimeout(() => {
+      button.textContent = previousLabel || "Copiar pasta convertidos";
+      copyMediaOutputPathResetTimer = null;
+    }, 1600);
+  } catch (error) {
+    button.textContent = "Falha ao copiar";
+    if (copyMediaOutputPathResetTimer) {
+      clearTimeout(copyMediaOutputPathResetTimer);
+    }
+    copyMediaOutputPathResetTimer = setTimeout(() => {
+      button.textContent = "Copiar pasta convertidos";
+      copyMediaOutputPathResetTimer = null;
+    }, 1800);
+    console.error("copyMediaOutputPath failed", error);
+  }
+}
+
+async function generateThumbsSlideshow() {
+  const button = document.getElementById("generate-slideshow-btn");
+  if (!button || button.disabled) {
+    return;
+  }
+  const defaultLabel = "Gerar SlideShow";
+  const confirmed = window.confirm(
+    "Gerar um slideshow dinamico com as imagens de media_thumbs?\n\n" +
+      "Intervalo: 500ms por imagem\n" +
+      "Limite: 5 minutos\n" +
+      "Categoria: SlideShows"
+  );
+  if (!confirmed) {
+    return;
+  }
+
+  button.disabled = true;
+  button.textContent = "Gerando...";
+  try {
+    const result = await api("/videos/slideshow", { method: "POST" });
+    const used = Number(result?.images_used || 0);
+    const duration = Number(result?.duration_seconds || 0);
+    const videoId = Number(result?.video_id || 0);
+    button.textContent = `Pronto (#${videoId})`;
+    const galleryUrl = String(result?.gallery_url || "").trim();
+    const message =
+      `Slideshow gerado: video #${videoId}\n` +
+      `${used} imagens, ~${duration.toFixed(1)}s\n` +
+      `Categoria: ${safe(result?.category) || "SlideShows"}`;
+    window.alert(message);
+    await loadHealthAndStats();
+    if (galleryUrl) {
+      window.open(galleryUrl, "_blank", "noopener,noreferrer");
+    }
+  } catch (error) {
+    button.textContent = "Falha";
+    window.alert(`Falha ao gerar slideshow: ${safe(error.message)}`);
+    console.error("generateThumbsSlideshow failed", error);
+  } finally {
+    setTimeout(() => {
+      button.disabled = false;
+      button.textContent = defaultLabel;
+    }, 1800);
+  }
+}
 
 async function api(path, options = {}) {
   const response = await fetch(`${API}${path}`, {
@@ -143,71 +267,71 @@ function formatDateTime(value) {
 const STAT_TILE_CONFIG = {
   Folders: {
     tone: "slate",
-    icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5A2.5 2.5 0 0 1 5.5 6H10l2 2h6.5A2.5 2.5 0 0 1 21 10.5v7A2.5 2.5 0 0 1 18.5 20h-13A2.5 2.5 0 0 1 3 17.5z"/><path d="M3 10h18"/></svg>`,
+    icon: `<i class="fa-solid fa-folder"></i>`,
   },
   Active: {
     tone: "green",
-    icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="m8.5 12.3 2.2 2.2 4.8-5.2"/></svg>`,
+    icon: `<i class="fa-solid fa-circle-check"></i>`,
   },
   Videos: {
     tone: "blue",
-    icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="m10 9 5 3-5 3z"/><path d="M7 5v14"/><path d="M17 5v14"/></svg>`,
+    icon: `<i class="fa-solid fa-film"></i>`,
   },
   Ready: {
     tone: "green",
-    icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v10"/><path d="m8.5 9.5 3.5 3.5 3.5-3.5"/><rect x="4" y="15" width="16" height="5" rx="2"/></svg>`,
+    icon: `<i class="fa-solid fa-circle-down"></i>`,
   },
   "Tempo total": {
     tone: "slate",
-    icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg>`,
+    icon: `<i class="fa-solid fa-clock"></i>`,
   },
   "Tempo assistido": {
     tone: "cyan",
-    icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 8v4l3.5 2.5"/><path d="m9.5 12 1.6 1.6 3.9-4.1"/></svg>`,
+    icon: `<i class="fa-solid fa-stopwatch"></i>`,
   },
   "Com audio": {
     tone: "blue",
-    icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 10v4"/><path d="M8 8v8"/><path d="M11 6v12"/><path d="M14 9a3 3 0 0 1 0 6"/><path d="M17 7a6 6 0 0 1 0 10"/></svg>`,
+    icon: `<i class="fa-solid fa-volume-high"></i>`,
   },
   "Sem audio": {
     tone: "amber",
-    icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 10v4"/><path d="M8 8v8"/><path d="M11 6v12"/><path d="m16 9 4 6"/><path d="m20 9-4 6"/></svg>`,
+    icon: `<i class="fa-solid fa-volume-xmark"></i>`,
   },
   Visualizados: {
     tone: "cyan",
-    icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.8"/></svg>`,
+    icon: `<i class="fa-solid fa-eye"></i>`,
   },
   "Visualizados sem favorito": {
     tone: "blue",
-    icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.8"/><path d="m16.5 7.5 3 3"/><path d="m19.5 7.5-3 3"/></svg>`,
+    icon: `<i class="fa-solid fa-heart-circle-xmark"></i>`,
   },
   "Ready Size": {
     tone: "amber",
-    icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2.5"/><path d="M8 8h8"/><path d="M8 12h8"/><path d="M8 16h5"/></svg>`,
+    icon: `<i class="fa-solid fa-hard-drive"></i>`,
   },
   Processing: {
     tone: "amber",
-    icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4V1.5"/><path d="M12 22.5V20"/><path d="m17.7 6.3 1.8-1.8"/><path d="m4.5 19.5 1.8-1.8"/><path d="M20 12h2.5"/><path d="M1.5 12H4"/><path d="m17.7 17.7 1.8 1.8"/><path d="m4.5 4.5 1.8 1.8"/><circle cx="12" cy="12" r="4.5"/></svg>`,
+    icon: `<i class="fa-solid fa-gears"></i>`,
   },
   Errors: {
     tone: "red",
-    icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5 21 19H3z"/><path d="M12 9v4.5"/><path d="M12 17h.01"/></svg>`,
+    icon: `<i class="fa-solid fa-triangle-exclamation"></i>`,
   },
   "Jobs Pending": {
     tone: "amber",
-    icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg>`,
+    icon: `<i class="fa-solid fa-hourglass-half"></i>`,
   },
   "Jobs Running": {
     tone: "blue",
-    icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4.5v15l14-7.5z"/></svg>`,
+    icon: `<i class="fa-solid fa-play"></i>`,
   },
   "Jobs Failed": {
     tone: "red",
-    icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="m9 9 6 6"/><path d="m15 9-6 6"/></svg>`,
+    icon: `<i class="fa-solid fa-circle-xmark"></i>`,
   },
   default: {
     tone: "slate",
-    icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M8 8h8"/><path d="M8 12h8"/><path d="M8 16h5"/></svg>`,
+    icon: `<i class="fa-solid fa-file-lines"></i>`,
   },
 };
 
@@ -347,6 +471,8 @@ function getRedditElements() {
     listEl: document.getElementById("reddit-subreddits-list"),
     metaEl: document.getElementById("reddit-list-meta"),
     autoToggleEl: document.getElementById("reddit-auto-download-toggle"),
+    autoImageToggleEl: document.getElementById("reddit-auto-image-download-toggle"),
+    imageCountBtn: document.getElementById("reddit-image-count-btn"),
     fetchBtn: document.getElementById("reddit-fetch-btn"),
     saveBtn: document.getElementById("reddit-save-btn"),
     downloadBtn: document.getElementById("reddit-download-btn"),
@@ -354,6 +480,7 @@ function getRedditElements() {
     stopBtn: document.getElementById("reddit-stop-btn"),
     periodSelectEl: document.getElementById("reddit-period-select"),
     periodDownloadBtn: document.getElementById("reddit-period-download-btn"),
+    periodDownloadImagesBtn: document.getElementById("reddit-period-download-images-btn"),
     filterInput: document.getElementById("reddit-filter-input"),
     modalEl: document.getElementById("reddit-download-modal"),
     modalStopBtn: document.getElementById("reddit-download-stop-btn"),
@@ -370,13 +497,24 @@ function getRedditElements() {
 }
 
 function setRedditButtonsDisabled(disabled) {
-  const { fetchBtn, saveBtn, downloadBtn, downloadEmptyCategoriesBtn, periodSelectEl, periodDownloadBtn } = getRedditElements();
+  const {
+    fetchBtn,
+    saveBtn,
+    downloadBtn,
+    downloadEmptyCategoriesBtn,
+    periodSelectEl,
+    periodDownloadBtn,
+    periodDownloadImagesBtn,
+  } = getRedditElements();
   if (fetchBtn) fetchBtn.disabled = disabled;
   if (saveBtn) saveBtn.disabled = disabled;
   if (downloadBtn) downloadBtn.disabled = disabled;
   if (downloadEmptyCategoriesBtn) downloadEmptyCategoriesBtn.disabled = disabled;
   if (periodSelectEl) periodSelectEl.disabled = disabled;
   if (periodDownloadBtn) periodDownloadBtn.disabled = disabled;
+  if (periodDownloadImagesBtn) periodDownloadImagesBtn.disabled = disabled;
+  const downloadImagesBtn = document.getElementById("reddit-download-images-btn");
+  if (downloadImagesBtn) downloadImagesBtn.disabled = disabled;
 }
 
 function renderRedditSubscriptions() {
@@ -397,9 +535,28 @@ function renderRedditSubscriptions() {
     return name.includes(normalizedFilter) || title.includes(normalizedFilter);
   });
   filtered.sort((left, right) => {
+    const leftName = normalizeSubredditName(left?.name);
+    const rightName = normalizeSubredditName(right?.name);
+    const leftUser = isUserCategoryName(leftName);
+    const rightUser = isUserCategoryName(rightName);
+
+    // Usuarios u_ primeiro, ordenados por imgs/ano (maior -> menor).
+    if (leftUser !== rightUser) {
+      return leftUser ? -1 : 1;
+    }
+
+    if (leftUser && rightUser) {
+      const leftVerified = Boolean(left?.year_image_count_verified);
+      const rightVerified = Boolean(right?.year_image_count_verified);
+      const leftCount = leftVerified ? Math.max(0, Math.floor(Number(left?.year_image_count) || 0)) : -1;
+      const rightCount = rightVerified ? Math.max(0, Math.floor(Number(right?.year_image_count) || 0)) : -1;
+      if (rightCount !== leftCount) return rightCount - leftCount;
+      return leftName.localeCompare(rightName, "pt-BR");
+    }
+
     const subscriberDiff = Number(right?.subscribers || 0) - Number(left?.subscribers || 0);
     if (subscriberDiff !== 0) return subscriberDiff;
-    return normalizeSubredditName(left?.name).localeCompare(normalizeSubredditName(right?.name), "pt-BR");
+    return leftName.localeCompare(rightName, "pt-BR");
   });
 
   const selectedCount = redditSubscriptions.reduce((acc, item) => acc + (item?.is_selected ? 1 : 0), 0);
@@ -419,6 +576,11 @@ function renderRedditSubscriptions() {
       const subscribers = Number(item?.subscribers || 0);
       const nsfwLabel = over18 ? "NSFW" : "SFW";
       const downloaded = Boolean(item?.is_downloaded);
+      const yearImageVerified = Boolean(item?.year_image_count_verified);
+      const yearImageCount = Number(item?.year_image_count);
+      const yearImageLabel = yearImageVerified && Number.isFinite(yearImageCount)
+        ? `${Math.max(0, Math.floor(yearImageCount)).toLocaleString("pt-BR")} imgs/ano`
+        : "";
       const displayName = `${isUserProfile ? "u" : "r"}/${name}`;
       const audienceLabel = isUserProfile
         ? (subscribers > 0 ? `${subscribers.toLocaleString("pt-BR")} seguidores` : "seguidores indisponiveis")
@@ -435,6 +597,7 @@ function renderRedditSubscriptions() {
             <span class="reddit-item-title">
               ${escapeHtml(displayName)}
               ${downloaded ? '<span class="reddit-item-pill">downloaded</span>' : ""}
+              ${yearImageLabel ? `<span class="reddit-item-pill reddit-item-pill-images">${escapeHtml(yearImageLabel)}</span>` : ""}
             </span>
             <span class="reddit-item-meta">
               <span>${escapeHtml(title || "(sem titulo)")}</span>
@@ -485,18 +648,31 @@ function setVideosActionStatus(message, type = "info") {
 }
 
 async function loadRedditConfigStatus() {
-  const { fetchBtn, saveBtn, downloadBtn, periodSelectEl, periodDownloadBtn } = getRedditElements();
+  const {
+    fetchBtn,
+    saveBtn,
+    downloadBtn,
+    periodSelectEl,
+    periodDownloadBtn,
+    periodDownloadImagesBtn,
+  } = getRedditElements();
+  const downloadImagesBtn = document.getElementById("reddit-download-images-btn");
   if (!fetchBtn || !saveBtn || !downloadBtn || !periodSelectEl || !periodDownloadBtn) return;
   try {
     const payload = await api("/reddit/config-status");
     if (payload.configured) {
-      fetchBtn.disabled = false;
-      saveBtn.disabled = false;
-      downloadBtn.disabled = false;
-      periodSelectEl.disabled = false;
-      periodDownloadBtn.disabled = false;
-      if (!Array.isArray(redditSubscriptions) || redditSubscriptions.length === 0) {
-        setRedditStatus("Reddit configurado. Clique em 'Buscar assinaturas' para carregar.", "ready");
+      // Nao reabilitar botoes nem sobrescrever status enquanto busca assinaturas.
+      if (!redditSubscriptionsLoadInFlight) {
+        fetchBtn.disabled = false;
+        saveBtn.disabled = false;
+        downloadBtn.disabled = false;
+        periodSelectEl.disabled = false;
+        periodDownloadBtn.disabled = false;
+        if (periodDownloadImagesBtn) periodDownloadImagesBtn.disabled = false;
+        if (downloadImagesBtn) downloadImagesBtn.disabled = false;
+        if (!Array.isArray(redditSubscriptions) || redditSubscriptions.length === 0) {
+          setRedditStatus("Reddit configurado. Clique em 'Buscar assinaturas' para carregar.", "ready");
+        }
       }
     } else {
       const missing = Array.isArray(payload.missing) ? payload.missing.join(", ") : "";
@@ -506,6 +682,8 @@ async function loadRedditConfigStatus() {
       downloadBtn.disabled = true;
       periodSelectEl.disabled = true;
       periodDownloadBtn.disabled = true;
+      if (periodDownloadImagesBtn) periodDownloadImagesBtn.disabled = true;
+      if (downloadImagesBtn) downloadImagesBtn.disabled = true;
     }
   } catch (error) {
     setRedditStatus(`Falha ao validar config Reddit: ${safe(error.message)}`, "error");
@@ -514,6 +692,8 @@ async function loadRedditConfigStatus() {
     downloadBtn.disabled = true;
     periodSelectEl.disabled = true;
     periodDownloadBtn.disabled = true;
+    if (periodDownloadImagesBtn) periodDownloadImagesBtn.disabled = true;
+    if (downloadImagesBtn) downloadImagesBtn.disabled = true;
   }
 }
 
@@ -525,10 +705,19 @@ function getSelectedRedditNames() {
 }
 
 async function loadRedditSubscriptions(forceRefresh = false) {
+  // Evita que refreshAll/poll cancelem uma busca longa em andamento.
+  if (!forceRefresh && redditSubscriptionsLoadInFlight) {
+    return;
+  }
+  const loadSeq = ++redditSubscriptionsLoadSeq;
+  redditSubscriptionsLoadInFlight = true;
   setRedditStatus(forceRefresh ? "Atualizando assinaturas no Reddit..." : "Carregando assinaturas em cache...");
   setRedditButtonsDisabled(true);
   try {
     const payload = await api(`/reddit/subscriptions${forceRefresh ? "?refresh=true" : ""}`);
+    if (loadSeq !== redditSubscriptionsLoadSeq) {
+      return;
+    }
     redditSubscriptions = Array.isArray(payload?.items) ? payload.items : [];
     renderRedditSubscriptions();
 
@@ -546,9 +735,15 @@ async function loadRedditSubscriptions(forceRefresh = false) {
       setRedditStatus(`Subreddits carregados: ${total}. Selecionados: ${selected}. Fonte: ${cacheLabel}${cacheAtLabel}.`, "ready");
     }
   } catch (error) {
+    if (loadSeq !== redditSubscriptionsLoadSeq) {
+      return;
+    }
     setRedditStatus(`Erro ao buscar assinaturas: ${safe(error.message)}`, "error");
   } finally {
-    setRedditButtonsDisabled(false);
+    if (loadSeq === redditSubscriptionsLoadSeq) {
+      redditSubscriptionsLoadInFlight = false;
+      setRedditButtonsDisabled(false);
+    }
   }
 }
 
@@ -595,14 +790,94 @@ function clearRedditSubscriptionsSelection() {
 }
 
 function isRedditDownloadRunningState(state) {
-  return String(state || "").toLowerCase() === "running";
+  const normalized = String(state || "").toLowerCase();
+  return normalized === "running" || normalized === "loading";
+}
+
+function isRedditSavedSyncStatus(status) {
+  const trigger = String(status?.trigger || "").toLowerCase();
+  if (trigger === "manual_saved") return true;
+  const items = Array.isArray(status?.items) ? status.items : [];
+  return items.some((item) => String(item?.name || "").toLowerCase() === "meus salvos");
+}
+
+function setRedditSavedStatus(message, type = "") {
+  const el = document.getElementById("reddit-saved-status");
+  if (!el) return;
+  el.textContent = message;
+  el.className = "reddit-status";
+  if (type === "ready") el.classList.add("reddit-ready");
+  if (type === "error") el.classList.add("reddit-error");
+}
+
+function renderRedditSavedMonitor(status) {
+  const summaryEl = document.getElementById("reddit-saved-inline-summary");
+  const progressFillEl = document.getElementById("reddit-saved-inline-progress-fill");
+  const logsEl = document.getElementById("reddit-saved-inline-logs");
+  const syncBtn = document.getElementById("reddit-saved-sync-btn");
+  const stopBtn = document.getElementById("reddit-saved-stop-btn");
+  if (!summaryEl || !progressFillEl || !logsEl) return;
+
+  const isSaved = isRedditSavedSyncStatus(status);
+  const state = safe(status?.state).toLowerCase() || "idle";
+  const running = isSaved && isRedditDownloadRunningState(state);
+  const planned = Number(status?.total_videos_planned || 0);
+  const processed = Number(status?.processed_videos || 0);
+  const failed = Number(status?.failed_videos || 0);
+  const message = safe(status?.message).trim();
+  const savedSync = status?.saved_sync || {};
+  const listingItems = Number(savedSync?.listing_items || 0);
+  const videosFound = Number(savedSync?.videos_found || 0);
+  const imagesFound = Number(savedSync?.images_found || 0);
+  const alreadyMarked = Number(savedSync?.already_marked || 0);
+  const apiLimit = Boolean(savedSync?.api_limit_likely_reached);
+  const progressBase = planned > 0 ? planned : 1;
+  const progressCurrent = planned > 0 ? (processed + failed) : 0;
+  const percent = Math.max(0, Math.min(100, (progressCurrent * 100) / progressBase));
+
+  if (!isSaved) {
+    if (!running && state !== "completed" && state !== "completed_with_errors" && state !== "failed" && state !== "stopped") {
+      summaryEl.textContent = "Nenhuma sincronizacao ativa.";
+      progressFillEl.style.width = "0%";
+    }
+  } else {
+    summaryEl.textContent = [
+      `Estado: ${humanizeRedditDownloadStatus(state)}`,
+      `Midias ${processed}/${planned}`,
+      `Falhas ${failed}`,
+      listingItems > 0 ? `API ${listingItems}` : "",
+      videosFound > 0 || imagesFound > 0 ? `V ${videosFound}/I ${imagesFound}` : "",
+      alreadyMarked > 0 ? `Marcados ${alreadyMarked}` : "",
+      apiLimit ? "Teto ~1000" : "",
+      message || "",
+    ].filter(Boolean).join(" | ");
+    progressFillEl.style.width = `${percent.toFixed(2)}%`;
+    const logs = Array.isArray(status?.logs) ? status.logs : [];
+    logsEl.textContent = logs.length > 0 ? logs.join("\n") : "Sem logs ainda.";
+
+    if (state === "completed" || state === "completed_with_errors") {
+      setRedditSavedStatus(message || "Sincronizacao de Meus Salvos concluida.", "ready");
+    } else if (state === "failed") {
+      setRedditSavedStatus(message || "Falha na sincronizacao de Meus Salvos.", "error");
+    } else if (running) {
+      setRedditSavedStatus(message || "Sincronizando Meus Salvos...", "");
+    }
+  }
+
+  if (syncBtn) {
+    syncBtn.disabled = isRedditDownloadRunningState(state) || redditSavedSyncStartInFlight;
+  }
+  if (stopBtn) {
+    stopBtn.disabled = !(isSaved && isRedditDownloadRunningState(state));
+  }
 }
 
 function humanizeRedditDownloadStatus(value) {
   const normalized = safe(value).toLowerCase();
   if (normalized === "pending") return "Pendente";
   if (normalized === "loading") return "Preparando";
-  if (normalized === "scanning") return "Buscando no periodo";
+  if (normalized === "scanning") return "Contando / buscando";
+  if (normalized === "done") return "Concluido";
   if (normalized === "downloading") return "Baixando";
   if (normalized === "auto_waiting") return "Aguardando ociosidade";
   if (normalized === "auto_disabled") return "Auto-download desativado";
@@ -619,30 +894,54 @@ function renderRedditDownloadStatusBlock(summaryEl, progressFillEl, itemsEl, log
   if (!summaryEl || !progressFillEl || !itemsEl || !logsEl) return;
 
   const state = safe(status?.state).toLowerCase() || "idle";
+  const mediaType = safe(status?.media_type).toLowerCase() || "videos";
+  const isImageCount = mediaType === "image_count";
   const totalSubreddits = Number(status?.total_subreddits || 0);
   const completedSubreddits = Number(status?.completed_subreddits || 0);
   const planned = Number(status?.total_videos_planned || 0);
   const processed = Number(status?.processed_videos || 0);
   const failed = Number(status?.failed_videos || 0);
   const message = safe(status?.message).trim();
-  const progressBase = planned > 0 ? planned : totalSubreddits > 0 ? totalSubreddits : 1;
-  const progressCurrent = planned > 0 ? (processed + failed) : completedSubreddits;
+  const progressBase = isImageCount
+    ? (totalSubreddits > 0 ? totalSubreddits : 1)
+    : (planned > 0 ? planned : totalSubreddits > 0 ? totalSubreddits : 1);
+  const progressCurrent = isImageCount
+    ? completedSubreddits
+    : (planned > 0 ? (processed + failed) : completedSubreddits);
   const percent = Math.max(0, Math.min(100, (progressCurrent * 100) / progressBase));
 
-  summaryEl.textContent = `Estado: ${humanizeRedditDownloadStatus(state)} | Subreddits ${completedSubreddits}/${totalSubreddits} | Videos ${processed}/${planned} | Falhas ${failed}${message ? ` | ${message}` : ""}`;
+  if (isImageCount) {
+    summaryEl.textContent = `Estado: ${humanizeRedditDownloadStatus(state)} | Usuarios ${completedSubreddits}/${totalSubreddits} | Imagens ${processed} | Falhas ${failed}${message ? ` | ${message}` : ""}`;
+  } else {
+    const unitLabel = mediaType === "images" ? "Imagens" : "Videos";
+    summaryEl.textContent = `Estado: ${humanizeRedditDownloadStatus(state)} | Subreddits ${completedSubreddits}/${totalSubreddits} | ${unitLabel} ${processed}/${planned} | Falhas ${failed}${message ? ` | ${message}` : ""}`;
+  }
   progressFillEl.style.width = `${percent.toFixed(2)}%`;
 
   const items = Array.isArray(status?.items) ? status.items : [];
-  if (items.length === 0) {
-    itemsEl.innerHTML = `<div class="reddit-empty">Sem itens de download ainda.</div>`;
+  const visibleItems = isImageCount
+    ? items.filter((item) => {
+        const itemStatus = safe(item?.status).toLowerCase();
+        const count = Math.max(Number(item?.planned || 0), Number(item?.completed || 0));
+        if (itemStatus === "done" && count <= 0) return false;
+        return true;
+      })
+    : items;
+  if (visibleItems.length === 0) {
+    itemsEl.innerHTML = `<div class="reddit-empty">${isImageCount ? "Sem usuarios com imagens na fila/resultado." : "Sem itens de download ainda."}</div>`;
   } else {
-    itemsEl.innerHTML = items.map((item) => `
+    itemsEl.innerHTML = visibleItems.map((item) => {
+      const meta = isImageCount
+        ? `${safe(item?.planned || 0)} imgs/ano`
+        : `${safe(item?.completed || 0)}/${safe(item?.planned || 0)} (${safe(item?.failed || 0)} falha)`;
+      return `
       <div class="reddit-download-item">
         <span class="name">r/${escapeHtml(item?.name || "")}</span>
-        <span class="meta">${safe(item?.completed || 0)}/${safe(item?.planned || 0)} (${safe(item?.failed || 0)} falha)</span>
+        <span class="meta">${meta}</span>
         <span class="status">${escapeHtml(humanizeRedditDownloadStatus(item?.status || "pending"))}</span>
       </div>
-    `).join("");
+    `;
+    }).join("");
   }
 
   const logs = Array.isArray(status?.logs) ? status.logs : [];
@@ -678,6 +977,7 @@ function renderRedditDownloadStatus(status) {
     downloadEmptyCategoriesBtn,
     periodSelectEl,
     periodDownloadBtn,
+    periodDownloadImagesBtn,
     inlineSummaryEl,
     inlineProgressFillEl,
     inlineItemsEl,
@@ -699,10 +999,31 @@ function renderRedditDownloadStatus(status) {
   );
 
   const state = safe(status?.state).toLowerCase() || "idle";
+  const mediaType = safe(status?.media_type).toLowerCase() || "videos";
   const autoEnabled = status?.auto_enabled !== false;
+  const autoImageEnabled = status?.auto_image_enabled !== false;
+  const { autoImageToggleEl, imageCountBtn } = getRedditElements();
+  const modalTitleEl = document.getElementById("reddit-download-modal-title");
+  if (modalTitleEl) {
+    modalTitleEl.textContent = mediaType === "image_count"
+      ? "Contagem de imagens Reddit"
+      : (isRedditSavedSyncStatus(status) ? "Meus Salvos" : "Download Reddit");
+  }
+  updateImageCountFeedback(status);
+  renderRedditSavedMonitor(status);
   if (autoToggleEl) {
     autoToggleEl.checked = autoEnabled;
     autoToggleEl.disabled = redditAutoToggleRequestInFlight;
+  }
+  if (autoImageToggleEl) {
+    autoImageToggleEl.checked = autoImageEnabled;
+    autoImageToggleEl.disabled = redditAutoImageToggleRequestInFlight;
+  }
+  if (imageCountBtn) {
+    imageCountBtn.disabled = isRedditDownloadRunningState(state) || redditImageCountRequestInFlight;
+  }
+  if (mergeUserYearImageCounts(status?.user_year_image_counts)) {
+    renderRedditSubscriptions();
   }
   if (downloadBtn) {
     downloadBtn.disabled = isRedditDownloadRunningState(state);
@@ -716,6 +1037,13 @@ function renderRedditDownloadStatus(status) {
   if (periodDownloadBtn) {
     periodDownloadBtn.disabled = isRedditDownloadRunningState(state);
   }
+  if (periodDownloadImagesBtn) {
+    periodDownloadImagesBtn.disabled = isRedditDownloadRunningState(state);
+  }
+  const downloadImagesBtn = document.getElementById("reddit-download-images-btn");
+  if (downloadImagesBtn) {
+    downloadImagesBtn.disabled = isRedditDownloadRunningState(state);
+  }
   if (periodSelectEl) {
     periodSelectEl.disabled = isRedditDownloadRunningState(state);
   }
@@ -725,6 +1053,84 @@ function renderRedditDownloadStatus(status) {
   if (modalCloseBtn) {
     modalCloseBtn.disabled = isRedditDownloadRunningState(state);
   }
+}
+
+function mergeUserYearImageCounts(counts) {
+  if (!counts || typeof counts !== "object" || Array.isArray(counts)) return false;
+  if (!Array.isArray(redditSubscriptions) || redditSubscriptions.length === 0) return false;
+
+  let changed = false;
+  redditSubscriptions = redditSubscriptions.map((item) => {
+    const key = normalizeSubredditName(item?.name).toLowerCase();
+    if (!key || !Object.prototype.hasOwnProperty.call(counts, key)) return item;
+    const nextCount = Math.max(0, Math.floor(Number(counts[key])));
+    if (!Number.isFinite(nextCount)) return item;
+    if (item?.year_image_count_verified && Number(item?.year_image_count) === nextCount) {
+      return item;
+    }
+    changed = true;
+    return {
+      ...item,
+      year_image_count: nextCount,
+      year_image_count_verified: true,
+    };
+  });
+  return changed;
+}
+
+function ensureIdleImageCountToastEl() {
+  let toastEl = document.getElementById("reddit-image-count-toast");
+  if (toastEl) return toastEl;
+  toastEl = document.createElement("div");
+  toastEl.id = "reddit-image-count-toast";
+  toastEl.className = "reddit-image-count-toast";
+  toastEl.setAttribute("aria-live", "polite");
+  toastEl.hidden = true;
+  toastEl.innerHTML = `
+    <div class="reddit-image-count-toast-title">Contando imagens</div>
+    <div class="reddit-image-count-toast-body"></div>
+  `;
+  document.body.appendChild(toastEl);
+  return toastEl;
+}
+
+function updateIdleImageCountToast(scan) {
+  const toastEl = ensureIdleImageCountToastEl();
+  const bodyEl = toastEl.querySelector(".reddit-image-count-toast-body");
+  const active = Boolean(scan?.active);
+  const current = normalizeSubredditName(scan?.current || "");
+  const message = safe(scan?.message).trim();
+
+  if (!active) {
+    toastEl.hidden = true;
+    toastEl.classList.remove("is-visible");
+    if (bodyEl) bodyEl.textContent = "";
+    return;
+  }
+
+  const displayName = current
+    ? (isUserCategoryName(current) ? `u/${current}` : `r/${current}`)
+    : "usuario";
+  if (bodyEl) {
+    bodyEl.textContent = message || `Verificando ${displayName} (periodo de 1 ano)...`;
+  }
+  toastEl.hidden = false;
+  toastEl.classList.add("is-visible");
+}
+
+function updateImageCountFeedback(status) {
+  const mediaType = safe(status?.media_type).toLowerCase();
+  const state = safe(status?.state).toLowerCase();
+  const scan = status?.image_count_scan && typeof status.image_count_scan === "object"
+    ? status.image_count_scan
+    : {};
+  const running = mediaType === "image_count"
+    && (state === "running" || state === "loading" || Boolean(scan.active));
+  updateIdleImageCountToast({
+    active: running,
+    current: scan.current,
+    message: safe(scan.message).trim() || safe(status?.message).trim(),
+  });
 }
 
 async function updateRedditAutoDownloadEnabled(enabled) {
@@ -742,13 +1148,13 @@ async function updateRedditAutoDownloadEnabled(enabled) {
     renderRedditDownloadStatus(status);
     setRedditStatus(
       normalized
-        ? "Auto-download quando ocioso ativado."
-        : "Auto-download quando ocioso desativado. Downloads manuais continuam disponiveis.",
+        ? "Auto-download de videos quando ocioso ativado."
+        : "Auto-download de videos quando ocioso desativado.",
       "ready",
     );
     loadConfig().catch(() => {});
   } catch (error) {
-    setRedditStatus(`Falha ao atualizar auto-download: ${safe(error.message)}`, "error");
+    setRedditStatus(`Falha ao atualizar auto-download de videos: ${safe(error.message)}`, "error");
     await loadCurrentRedditDownloadStatus();
   } finally {
     redditAutoToggleRequestInFlight = false;
@@ -759,11 +1165,106 @@ async function updateRedditAutoDownloadEnabled(enabled) {
   }
 }
 
+async function updateRedditAutoImageDownloadEnabled(enabled) {
+  const normalized = Boolean(enabled);
+  const { autoImageToggleEl } = getRedditElements();
+  redditAutoImageToggleRequestInFlight = true;
+  if (autoImageToggleEl) {
+    autoImageToggleEl.disabled = true;
+  }
+  try {
+    const status = await api("/reddit/download/auto-image-enabled", {
+      method: "PUT",
+      body: JSON.stringify({ enabled: normalized }),
+    });
+    renderRedditDownloadStatus(status);
+    setRedditStatus(
+      normalized
+        ? "Auto-download de imagens ativado; iniciando download agora..."
+        : "Auto-download de imagens quando ocioso desativado.",
+      "ready",
+    );
+    if (normalized) {
+      loadCurrentRedditDownloadStatus().catch(() => {});
+    }
+  } catch (error) {
+    setRedditStatus(`Falha ao atualizar auto-download de imagens: ${safe(error.message)}`, "error");
+    await loadCurrentRedditDownloadStatus();
+  } finally {
+    redditAutoImageToggleRequestInFlight = false;
+    const { autoImageToggleEl: currentToggleEl } = getRedditElements();
+    if (currentToggleEl) {
+      currentToggleEl.disabled = false;
+    }
+  }
+}
+
+async function startRedditImageCountScan() {
+  const { imageCountBtn } = getRedditElements();
+  redditImageCountRequestInFlight = true;
+  redditDownloadStartInFlight = true;
+  if (imageCountBtn) imageCountBtn.disabled = true;
+
+  openRedditDownloadModal();
+  renderRedditDownloadStatus({
+    state: "loading",
+    media_type: "image_count",
+    total_subreddits: 0,
+    completed_subreddits: 0,
+    total_videos_planned: 0,
+    processed_videos: 0,
+    failed_videos: 0,
+    items: [],
+    logs: ["[IMG-COUNT] Preparando lista de usuarios u_ pendentes..."],
+    message: "Preparando lista de usuarios pendentes...",
+    image_count_scan: {
+      active: true,
+      current: null,
+      message: "Preparando lista de usuarios u_ pendentes...",
+    },
+  });
+  setRedditStatus("Contagem de imagens: preparando lista... Acompanhe no modal/toast.", "ready");
+  startRedditDownloadPolling();
+
+  try {
+    const status = await api("/reddit/image-count/start", { method: "POST" });
+    renderRedditDownloadStatus(status);
+    setRedditStatus("Contagem de imagens iniciada. Acompanhe no modal e no toast.", "ready");
+    if (shouldKeepRedditStatusPolling(status)) {
+      startRedditDownloadPolling();
+    }
+  } catch (error) {
+    stopRedditDownloadPolling();
+    renderRedditDownloadStatus({
+      state: "failed",
+      media_type: "image_count",
+      items: [],
+      logs: [`Falha ao iniciar contagem: ${safe(error.message)}`],
+      message: safe(error.message),
+      image_count_scan: { active: false, current: null, message: safe(error.message) },
+    });
+    setRedditStatus(`Falha ao iniciar contagem de imagens: ${safe(error.message)}`, "error");
+  } finally {
+    redditImageCountRequestInFlight = false;
+    redditDownloadStartInFlight = false;
+    const { imageCountBtn: currentBtn } = getRedditElements();
+    if (currentBtn) currentBtn.disabled = false;
+  }
+}
+
+function shouldKeepRedditStatusPolling(status) {
+  const state = String(status?.state || "").toLowerCase();
+  return state === "running" || state === "loading" || Boolean(status?.image_count_scan?.active);
+}
+
 async function loadCurrentRedditDownloadStatus() {
+  if (redditDownloadStartInFlight || redditImageCountRequestInFlight) {
+    return;
+  }
   try {
     const status = await api("/reddit/download/status");
     renderRedditDownloadStatus(status);
-    if (isRedditDownloadRunningState(status?.state)) {
+    if (shouldKeepRedditStatusPolling(status)) {
       if (!redditDownloadPollTimer) {
         startRedditDownloadPolling();
       }
@@ -790,12 +1291,18 @@ function stopRedditDownloadPolling() {
 }
 
 async function pollRedditDownloadStatusOnce() {
+  if (redditDownloadStartInFlight || redditImageCountRequestInFlight) {
+    return;
+  }
   try {
     const status = await api("/reddit/download/status");
     renderRedditDownloadStatus(status);
-    if (!isRedditDownloadRunningState(status?.state)) {
-      stopRedditDownloadPolling();
-      await loadRedditSubscriptions(false);
+    if (shouldKeepRedditStatusPolling(status)) {
+      return;
+    }
+    stopRedditDownloadPolling();
+    await loadRedditSubscriptions(false);
+    if (isRedditDownloadRunningState(status?.state) === false && Array.isArray(status?.items) && status.items.length > 0) {
       await loadVideos();
       await loadJobs();
       await loadHealthAndStats();
@@ -816,6 +1323,50 @@ function startRedditDownloadPolling() {
   redditDownloadPollTimer = setInterval(() => {
     pollRedditDownloadStatusOnce();
   }, 1200);
+}
+
+async function startRedditLatestImagesDownload() {
+  const selectedNames = getSelectedRedditNames();
+
+  if (selectedNames.length === 0) {
+    setRedditStatus("Selecione pelo menos 1 subreddit para baixar.", "error");
+    return;
+  }
+
+  openRedditDownloadModal();
+  renderRedditDownloadStatus({
+    state: "running",
+    media_type: "images",
+    total_subreddits: selectedNames.length,
+    completed_subreddits: 0,
+    total_videos_planned: selectedNames.length * 10,
+    processed_videos: 0,
+    failed_videos: 0,
+    items: selectedNames.map((name) => ({ name, status: "pending", planned: 0, completed: 0, failed: 0 })),
+    logs: ["Iniciando download de imagens..."],
+  });
+
+  try {
+    await api("/reddit/download/start", {
+      method: "POST",
+      body: JSON.stringify({
+        names: selectedNames,
+        per_subreddit_limit: 10,
+        media_type: "images",
+      }),
+    });
+    setRedditStatus(`Download de imagens iniciado para ${selectedNames.length} subreddit(s).`, "ready");
+    await pollRedditDownloadStatusOnce();
+    startRedditDownloadPolling();
+  } catch (error) {
+    setRedditStatus(`Falha ao iniciar download de imagens: ${safe(error.message)}`, "error");
+    renderRedditDownloadStatus({
+      state: "failed",
+      media_type: "images",
+      items: selectedNames.map((name) => ({ name, status: "failed", planned: 0, completed: 0, failed: 0 })),
+      logs: [`Falha ao iniciar download de imagens: ${safe(error.message)}`],
+    });
+  }
 }
 
 async function startRedditLatestVideosDownload() {
@@ -889,9 +1440,68 @@ async function startRedditEmptyCategoriesDownload() {
   }
 }
 
-async function startRedditPeriodDownload() {
+async function startRedditEmptyUserImagesDownload() {
+  if (redditDownloadStartInFlight) {
+    setRedditStatus("Ja existe um download Reddit em preparacao/andamento.", "error");
+    return;
+  }
+
+  const rawLimit = window.prompt(
+    "Quantos perfis u_ vazios baixar?\n(10 imagens por perfil, ordenados por imgs/ano)\nInforme um numero de 1 a 500.",
+    "10",
+  );
+  if (rawLimit === null) return;
+  const subredditLimit = Math.floor(Number(String(rawLimit).trim()));
+  if (!Number.isFinite(subredditLimit) || subredditLimit < 1 || subredditLimit > 500) {
+    setRedditStatus("Quantidade invalida. Use um numero inteiro de 1 a 500.", "error");
+    return;
+  }
+
+  redditDownloadStartInFlight = true;
+  stopRedditDownloadPolling();
+  openRedditDownloadModal();
+  renderRedditDownloadStatus({
+    state: "loading",
+    media_type: "images",
+    total_subreddits: 0,
+    completed_subreddits: 0,
+    total_videos_planned: 0,
+    processed_videos: 0,
+    failed_videos: 0,
+    items: [],
+    logs: [
+      `Selecionando ${subredditLimit} perfis u_ com mais imgs/ano e sem imagens baixadas...`,
+    ],
+  });
+
+  try {
+    await api(`/reddit/download/start-empty-user-images?subreddit_limit=${subredditLimit}`, {
+      method: "POST",
+    });
+    setRedditStatus(
+      `Download de imagens iniciado para ate ${subredditLimit} u_ vazios com mais imgs/ano.`,
+      "ready",
+    );
+    await pollRedditDownloadStatusOnce();
+    startRedditDownloadPolling();
+  } catch (error) {
+    setRedditStatus(`Falha ao iniciar download de imagens de u_ vazios: ${safe(error.message)}`, "error");
+    renderRedditDownloadStatus({
+      state: "failed",
+      media_type: "images",
+      items: [],
+      logs: [`Falha ao iniciar download de imagens de u_ vazios: ${safe(error.message)}`],
+    });
+  } finally {
+    redditDownloadStartInFlight = false;
+  }
+}
+
+async function startRedditPeriodDownload(mediaType = "videos") {
   const { periodSelectEl } = getRedditElements();
   const selectedNames = getSelectedRedditNames();
+  const normalizedMediaType = mediaType === "images" ? "images" : "videos";
+  const mediaLabel = normalizedMediaType === "images" ? "imagens" : "videos";
 
   if (selectedNames.length !== 1) {
     setRedditStatus("Selecione exatamente 1 subreddit para baixar por periodo.", "error");
@@ -908,13 +1518,14 @@ async function startRedditPeriodDownload() {
   openRedditDownloadModal();
   renderRedditDownloadStatus({
     state: "running",
+    media_type: normalizedMediaType,
     total_subreddits: 1,
     completed_subreddits: 0,
     total_videos_planned: 0,
     processed_videos: 0,
     failed_videos: 0,
     items: [{ name: selectedName, status: "pending", planned: 0, completed: 0, failed: 0 }],
-    logs: [`Iniciando download do periodo de ${periodMonths} mes(es)...`],
+    logs: [`Iniciando download de ${mediaLabel} do periodo de ${periodMonths} mes(es)...`],
   });
 
   try {
@@ -924,15 +1535,20 @@ async function startRedditPeriodDownload() {
         names: [selectedName],
         period_months: periodMonths,
         per_subreddit_limit: null,
+        media_type: normalizedMediaType,
       }),
     });
-    setRedditStatus(`Download por periodo iniciado para r/${selectedName} (${periodMonths} mes(es)).`, "ready");
+    setRedditStatus(
+      `Download de ${mediaLabel} por periodo iniciado para r/${selectedName} (${periodMonths} mes(es)).`,
+      "ready",
+    );
     await pollRedditDownloadStatusOnce();
     startRedditDownloadPolling();
   } catch (error) {
     setRedditStatus(`Falha ao iniciar download por periodo: ${safe(error.message)}`, "error");
     renderRedditDownloadStatus({
       state: "failed",
+      media_type: normalizedMediaType,
       items: [{ name: selectedName, status: "failed", planned: 0, completed: 0, failed: 0 }],
       logs: [`Falha ao iniciar download por periodo: ${safe(error.message)}`],
     });
@@ -944,8 +1560,61 @@ async function stopRedditDownloadProcess() {
     const status = await api("/reddit/download/stop", { method: "POST" });
     renderRedditDownloadStatus(status);
     setRedditStatus("Processo de download Reddit interrompido.", "ready");
+    if (isRedditSavedSyncStatus(status)) {
+      setRedditSavedStatus("Sincronizacao de Meus Salvos interrompida.", "ready");
+    }
   } catch (error) {
     setRedditStatus(`Falha ao interromper download: ${safe(error.message)}`, "error");
+    setRedditSavedStatus(`Falha ao interromper sincronizacao: ${safe(error.message)}`, "error");
+  }
+}
+
+async function startRedditSavedSync() {
+  if (redditSavedSyncStartInFlight || redditDownloadStartInFlight) return;
+  redditSavedSyncStartInFlight = true;
+  openRedditDownloadModal();
+  renderRedditDownloadStatus({
+    state: "running",
+    trigger: "manual_saved",
+    media_type: "both",
+    total_subreddits: 1,
+    completed_subreddits: 0,
+    total_videos_planned: 0,
+    processed_videos: 0,
+    failed_videos: 0,
+    items: [{ name: "Meus Salvos", status: "loading", planned: 0, completed: 0, failed: 0 }],
+    logs: ["Iniciando sincronizacao de Meus Salvos..."],
+    message: "Buscando posts salvos da conta Reddit...",
+    saved_sync: {
+      listing_items: 0,
+      posts: 0,
+      videos_found: 0,
+      images_found: 0,
+      already_marked: 0,
+      api_limit_likely_reached: false,
+    },
+  });
+  setRedditSavedStatus("Sincronizando Meus Salvos...", "");
+  try {
+    await api("/reddit/saved/download/start", {
+      method: "POST",
+      body: JSON.stringify({ media_type: "both" }),
+    });
+    setRedditSavedStatus("Sincronizacao de Meus Salvos iniciada.", "ready");
+    await pollRedditDownloadStatusOnce();
+    startRedditDownloadPolling();
+  } catch (error) {
+    setRedditSavedStatus(`Falha ao iniciar Meus Salvos: ${safe(error.message)}`, "error");
+    renderRedditDownloadStatus({
+      state: "failed",
+      trigger: "manual_saved",
+      media_type: "both",
+      items: [{ name: "Meus Salvos", status: "failed", planned: 0, completed: 0, failed: 0 }],
+      logs: [`Falha: ${safe(error.message)}`],
+      message: safe(error.message),
+    });
+  } finally {
+    redditSavedSyncStartInFlight = false;
   }
 }
 
@@ -957,15 +1626,22 @@ function renderCategoryCloud(list) {
   const normalized = list.map((item) => {
     const count = Number(item?.count);
     const favoritesCount = Number(item?.favoritesCount ?? item?.favorites_count);
+    const videoCount = Number(item?.videoCount ?? item?.video_count);
+    const imageCount = Number(item?.imageCount ?? item?.image_count);
     const category = String(item?.category || "").trim();
     const hasCustomHref = Object.prototype.hasOwnProperty.call(item || {}, "href");
+    const imagesOnly = Number.isFinite(videoCount)
+      && Number.isFinite(imageCount)
+      && videoCount <= 0
+      && imageCount > 0;
+    const defaultHref = category
+      ? `/admin/category?name=${encodeURIComponent(category)}${imagesOnly ? "&images=1" : ""}`
+      : "";
     return {
       category,
       count: Number.isFinite(count) ? Math.max(0, count) : 0,
       favoritesCount: Number.isFinite(favoritesCount) ? Math.max(0, favoritesCount) : 0,
-      href: hasCustomHref
-        ? String(item?.href || "")
-        : (category ? `/admin/category?name=${encodeURIComponent(category)}` : ""),
+      href: hasCustomHref ? String(item?.href || "") : defaultHref,
       isFavorite: Boolean(item?.isFavorite),
     };
   }).filter((item) => item.category.length > 0);
@@ -998,6 +1674,7 @@ function renderChannelsList(list) {
     const channelKey = safe(item?.channel_key ?? item?.channelKey).trim();
     const isUserCategory = Boolean(item?.is_user_category ?? item?.isUserCategory);
     const videoCount = Math.max(0, Number(item?.video_count ?? item?.videoCount ?? 0));
+    const imageCount = Math.max(0, Number(item?.image_count ?? item?.imageCount ?? 0));
     const watchedCount = Math.max(0, Number(item?.watched_count ?? item?.watchedCount ?? 0));
     const favoritesCount = Math.max(0, Number(item?.favorites_count ?? item?.favoritesCount ?? 0));
     const galleryUrl = safe(item?.gallery_url ?? item?.galleryUrl).trim();
@@ -1015,6 +1692,7 @@ function renderChannelsList(list) {
           </div>
           <div class="channel-card-meta">
             <span>${videoCount.toLocaleString("pt-BR")} videos</span>
+            <span>${imageCount.toLocaleString("pt-BR")} imagens</span>
             <span>${watchedCount.toLocaleString("pt-BR")} vistos</span>
             <span>${favoritesCount.toLocaleString("pt-BR")} favoritos</span>
           </div>
@@ -1028,6 +1706,170 @@ function renderChannelsList(list) {
       </article>
     `;
   }).join("");
+}
+
+const GALLERY_DOWNLOAD_LIST_PERIOD_MONTHS = 12;
+
+function renderGalleryDownloadList(items) {
+  const listEl = document.getElementById("gallery-download-list");
+  const metaEl = document.getElementById("gallery-download-list-meta");
+  if (!listEl) return;
+
+  const normalized = Array.isArray(items) ? items : [];
+  if (metaEl) {
+    metaEl.textContent = normalized.length > 0
+      ? `${normalized.length} galeria(s) salva(s)`
+      : "Nenhuma galeria salva";
+  }
+
+  if (normalized.length === 0) {
+    listEl.innerHTML = `<div class="category-empty">Nenhuma galeria na lista de downloads.</div>`;
+    return;
+  }
+
+  listEl.innerHTML = normalized.map((item) => {
+    const name = safe(item?.name).trim();
+    const mediaType = safe(item?.media_type).trim().toLowerCase();
+    const galleryUrl = safe(item?.gallery_url).trim();
+    const addedAt = formatDateTime(item?.added_at);
+    const mediaLabel = mediaType === "videos" ? "videos" : "imagens";
+    return `
+      <article class="gallery-download-item" data-name="${escapeAttr(name)}" data-media-type="${escapeAttr(mediaType)}">
+        <div class="gallery-download-item-main">
+          <div class="gallery-download-item-title">
+            <span class="gallery-download-item-name">${escapeHtml(name)}</span>
+            <span class="channel-card-pill">${escapeHtml(mediaLabel)}</span>
+          </div>
+          <div class="gallery-download-item-meta">${addedAt ? `Adicionada em ${escapeHtml(addedAt)}` : ""}</div>
+        </div>
+        <div class="gallery-download-item-actions">
+          <a class="channel-link" href="${escapeAttr(galleryUrl)}">Abrir galeria</a>
+          <button type="button" class="gallery-download-period-btn btn-reddit-download" data-name="${escapeAttr(name)}" data-media-type="videos">Baixar videos (1 ano)</button>
+          <button type="button" class="gallery-download-period-btn btn-reddit-download" data-name="${escapeAttr(name)}" data-media-type="images">Baixar fotos (1 ano)</button>
+          <button type="button" class="gallery-download-remove-btn" data-name="${escapeAttr(name)}" data-media-type="${escapeAttr(mediaType)}">Remover</button>
+        </div>
+      </article>
+    `;
+  }).join("");
+}
+
+let galleryDownloadListHandlersReady = false;
+
+function configureGalleryDownloadListHandlers() {
+  if (galleryDownloadListHandlersReady) return;
+  const listEl = document.getElementById("gallery-download-list");
+  if (!listEl) return;
+  galleryDownloadListHandlersReady = true;
+
+  listEl.addEventListener("click", async (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+
+    const periodBtn = target.closest(".gallery-download-period-btn");
+    if (periodBtn instanceof HTMLButtonElement) {
+      event.preventDefault();
+      const name = String(periodBtn.dataset.name || "").trim();
+      const mediaType = String(periodBtn.dataset.mediaType || "videos").trim().toLowerCase();
+      if (!name) return;
+      periodBtn.disabled = true;
+      try {
+        await startGalleryDownloadListPeriodDownload(name, mediaType);
+      } finally {
+        periodBtn.disabled = false;
+      }
+      return;
+    }
+
+    const removeBtn = target.closest(".gallery-download-remove-btn");
+    if (!removeBtn || !(removeBtn instanceof HTMLButtonElement)) return;
+
+    const name = String(removeBtn.dataset.name || "").trim();
+    const mediaType = String(removeBtn.dataset.mediaType || "images").trim().toLowerCase();
+    if (!name) return;
+
+    removeBtn.disabled = true;
+    try {
+      await api(`/gallery/download-list/${encodeURIComponent(name)}?media_type=${encodeURIComponent(mediaType)}`, {
+        method: "DELETE",
+      });
+      await loadGalleryDownloadList();
+    } catch (error) {
+      window.alert(`Falha ao remover da lista: ${safe(error.message)}`);
+      removeBtn.disabled = false;
+    }
+  });
+}
+
+async function startGalleryDownloadListPeriodDownload(categoryName, mediaType = "videos") {
+  const name = String(categoryName || "").trim();
+  if (!name) return;
+
+  if (redditDownloadStartInFlight) {
+    setRedditStatus("Ja existe um download Reddit em andamento.", "error");
+    return;
+  }
+
+  const normalizedMediaType = mediaType === "images" ? "images" : "videos";
+  const mediaLabel = normalizedMediaType === "images" ? "fotos" : "videos";
+  const periodMonths = GALLERY_DOWNLOAD_LIST_PERIOD_MONTHS;
+
+  redditDownloadStartInFlight = true;
+  openRedditDownloadModal();
+  renderRedditDownloadStatus({
+    state: "running",
+    media_type: normalizedMediaType,
+    total_subreddits: 1,
+    completed_subreddits: 0,
+    total_videos_planned: 0,
+    processed_videos: 0,
+    failed_videos: 0,
+    items: [{ name, status: "pending", planned: 0, completed: 0, failed: 0 }],
+    logs: [`Iniciando download de ${mediaLabel} do periodo de 1 ano para ${name}...`],
+  });
+
+  try {
+    await api("/reddit/download/start", {
+      method: "POST",
+      body: JSON.stringify({
+        names: [name],
+        period_months: periodMonths,
+        per_subreddit_limit: null,
+        media_type: normalizedMediaType,
+      }),
+    });
+    setRedditStatus(
+      `Download de ${mediaLabel} (1 ano) iniciado para ${name}.`,
+      "ready",
+    );
+    await pollRedditDownloadStatusOnce();
+    startRedditDownloadPolling();
+  } catch (error) {
+    setRedditStatus(`Falha ao iniciar download por periodo: ${safe(error.message)}`, "error");
+    renderRedditDownloadStatus({
+      state: "failed",
+      media_type: normalizedMediaType,
+      items: [{ name, status: "failed", planned: 0, completed: 0, failed: 0 }],
+      logs: [`Falha ao iniciar download por periodo: ${safe(error.message)}`],
+    });
+  } finally {
+    redditDownloadStartInFlight = false;
+  }
+}
+
+async function loadGalleryDownloadList() {
+  configureGalleryDownloadListHandlers();
+  const listEl = document.getElementById("gallery-download-list");
+  if (!listEl) return;
+  try {
+    const payload = await api("/gallery/download-list");
+    renderGalleryDownloadList(Array.isArray(payload?.items) ? payload.items : []);
+  } catch (error) {
+    renderGalleryDownloadList([]);
+    const metaEl = document.getElementById("gallery-download-list-meta");
+    if (metaEl) {
+      metaEl.textContent = `Falha ao carregar lista: ${safe(error.message)}`;
+    }
+  }
 }
 
 function normalizePipelineState(state) {
@@ -1093,6 +1935,7 @@ async function loadHealthAndStats() {
       api("/channels").catch((error) => ({ load_error: safe(error.message) })),
     ]);
     healthEl.innerHTML = `<span class="status-ok">ONLINE</span> (${health.status})`;
+    setCachedMediaOutputDir(health?.media_output_dir);
     statsEl.innerHTML = [
       statTile("Folders", stats.folders_total),
       statTile("Active", stats.folders_active),
@@ -1105,6 +1948,8 @@ async function loadHealthAndStats() {
       statTile("Visualizados", stats.videos_watched),
       statTile("Visualizados sem favorito", stats.videos_watched_not_favorited),
       statTile("Ready Size", formatBytes(stats.ready_storage_bytes)),
+      statTile("Imagens", stats.images_total),
+      statTile("Imagens Size", formatBytes(stats.images_storage_bytes)),
       statTile("Processing", stats.videos_processing),
       statTile("Errors", stats.videos_error),
       statTile("Jobs Pending", stats.jobs_pending),
@@ -1150,6 +1995,14 @@ async function loadHealthAndStats() {
         favoritesCount: Math.max(0, favoriteCount),
         href: "/admin/category?favorites=1&name=Favoritos",
         isFavorite: true,
+      },
+      {
+        category: "Meus Salvos",
+        count: Math.max(
+          0,
+          Number(stats.videos_reddit_saved || 0) + Number(stats.images_reddit_saved || 0),
+        ),
+        href: "/admin/category?saved=1&name=Meus%20Salvos",
       },
       {
         category: "Nao vistos",
@@ -1321,12 +2174,34 @@ async function cleanupAllDownloadedVideos() {
   }
 }
 
+async function cleanupAllDownloadedImages() {
+  const btn = document.getElementById("cleanup-all-downloaded-images-btn");
+  if (!btn) return;
+  if (!window.confirm("Excluir permanentemente as imagens baixadas pelo app, preservando as favoritadas? Categorias e usuarios sem favoritos tambem serao limpos. Se o auto-download Reddit estiver ligado, novos downloads podem acontecer de novo depois.")) return;
+
+  btn.disabled = true;
+  setCategoriesActionStatus("Removendo imagens baixadas do app e preservando favoritos...");
+  try {
+    const payload = await api("/images/cleanup/downloaded-all", { method: "POST" });
+    const deletedImages = Number(payload?.deleted_images || 0);
+    setCategoriesActionStatus(
+      `Limpeza concluida: ${deletedImages} imagem(ns) baixada(s) do app removida(s). Favoritos foram preservados.`,
+      "ready",
+    );
+    await refreshAll();
+  } catch (error) {
+    setCategoriesActionStatus(`Falha na limpeza de imagens: ${safe(error.message)}`, "error");
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 async function resetLibraryPreservingConfig() {
   const btn = document.getElementById("reset-library-btn");
   if (!btn) return;
 
   const confirmed = window.prompt(
-    "Isso vai parar o pipeline, interromper downloads Reddit em andamento, apagar todos os videos/arquivos catalogados, jobs, logs, feed e historico Reddit. As configuracoes serao preservadas. Arquivos originais ja catalogados em pastas monitoradas tambem serao apagados. Digite ZERAR para confirmar.",
+    "Isso vai parar o pipeline, interromper downloads Reddit em andamento, apagar todos os videos, fotos/arquivos catalogados, jobs, logs, feed e historico Reddit. As configuracoes serao preservadas. Arquivos originais ja catalogados em pastas monitoradas tambem serao apagados. Digite ZERAR para confirmar.",
     "",
   );
   if (String(confirmed || "").trim().toUpperCase() !== "ZERAR") return;
@@ -1336,13 +2211,14 @@ async function resetLibraryPreservingConfig() {
   try {
     const payload = await api("/library/reset", { method: "POST" });
     const deletedVideos = Number(payload?.deleted_videos || 0);
+    const deletedImages = Number(payload?.deleted_images || 0);
     const deletedJobs = Number(payload?.deleted_jobs || 0);
     const deletedErrors = Number(payload?.deleted_error_logs || 0);
     const deletedFeedStates = Number(payload?.deleted_feed_states || 0);
     const deletedHistory = Number(payload?.deleted_reddit_history || 0);
     const deletedFiles = Number(payload?.deleted_files || 0);
     setCategoriesActionStatus(
-      `Base zerada. Videos: ${deletedVideos}; arquivos: ${deletedFiles}; jobs: ${deletedJobs}; logs: ${deletedErrors}; feed: ${deletedFeedStates}; historico Reddit: ${deletedHistory}. O pipeline ficou parado.`,
+      `Base zerada. Videos: ${deletedVideos}; fotos: ${deletedImages}; arquivos: ${deletedFiles}; jobs: ${deletedJobs}; logs: ${deletedErrors}; feed: ${deletedFeedStates}; historico Reddit: ${deletedHistory}. O pipeline ficou parado.`,
       "ready",
     );
     await refreshAll();
@@ -1502,6 +2378,7 @@ async function refreshAll() {
     loadRedditConfigStatus(),
     loadCurrentRedditDownloadStatus(),
     loadRedditSubscriptions(false),
+    loadGalleryDownloadList(),
     loadFolders(),
     loadVideos(),
     loadJobs(),
@@ -1651,6 +2528,15 @@ document.getElementById("refresh-all").addEventListener("click", refreshAll);
 document.getElementById("pipeline-start").addEventListener("click", () => pipelineAction("start"));
 document.getElementById("pipeline-pause").addEventListener("click", () => pipelineAction("pause"));
 document.getElementById("pipeline-stop").addEventListener("click", () => pipelineAction("stop"));
+const copyMediaOutputPathBtn = document.getElementById("copy-media-output-path");
+if (copyMediaOutputPathBtn) {
+  copyMediaOutputPathBtn.addEventListener("click", copyMediaOutputPath);
+  setCachedMediaOutputDir("");
+}
+const generateSlideshowBtn = document.getElementById("generate-slideshow-btn");
+if (generateSlideshowBtn) {
+  generateSlideshowBtn.addEventListener("click", generateThumbsSlideshow);
+}
 document.getElementById("videos-refresh-btn").addEventListener("click", loadVideos);
 document.getElementById("video-status-filter").addEventListener("change", loadVideos);
 
@@ -1661,6 +2547,7 @@ const redditClearBtn = document.getElementById("reddit-clear-btn");
 const redditAutoDownloadToggle = document.getElementById("reddit-auto-download-toggle");
 const redditDownloadBtn = document.getElementById("reddit-download-btn");
 const redditDownloadEmptyCategoriesBtn = document.getElementById("reddit-download-empty-categories-btn");
+const redditDownloadEmptyUserImagesBtn = document.getElementById("reddit-download-empty-user-images-btn");
 const redditStopBtn = document.getElementById("reddit-stop-btn");
 const redditPeriodDownloadBtn = document.getElementById("reddit-period-download-btn");
 const redditFilterInput = document.getElementById("reddit-filter-input");
@@ -1671,6 +2558,7 @@ const redditDownloadCloseBtn = document.getElementById("reddit-download-close-bt
 const redditDownloadBackdrop = redditDownloadModal ? redditDownloadModal.querySelector(".reddit-download-backdrop") : null;
 const resetLibraryBtn = document.getElementById("reset-library-btn");
 const cleanupAllDownloadedVideosBtn = document.getElementById("cleanup-all-downloaded-videos-btn");
+const cleanupAllDownloadedImagesBtn = document.getElementById("cleanup-all-downloaded-images-btn");
 const cleanupWatchedUnfavoritedBtn = document.getElementById("cleanup-watched-unfavorited-btn");
 const backfillAudioBtn = document.getElementById("videos-backfill-audio-btn");
 const channelsMasterLink = document.getElementById("channels-master-link");
@@ -1700,17 +2588,46 @@ if (redditAutoDownloadToggle) {
     updateRedditAutoDownloadEnabled(Boolean(event?.target?.checked));
   });
 }
+const redditAutoImageDownloadToggle = document.getElementById("reddit-auto-image-download-toggle");
+if (redditAutoImageDownloadToggle) {
+  redditAutoImageDownloadToggle.addEventListener("change", (event) => {
+    updateRedditAutoImageDownloadEnabled(Boolean(event?.target?.checked));
+  });
+}
+const redditImageCountBtn = document.getElementById("reddit-image-count-btn");
+if (redditImageCountBtn) {
+  redditImageCountBtn.addEventListener("click", startRedditImageCountScan);
+}
 if (redditDownloadBtn) {
   redditDownloadBtn.addEventListener("click", startRedditLatestVideosDownload);
+}
+const redditDownloadImagesBtn = document.getElementById("reddit-download-images-btn");
+if (redditDownloadImagesBtn) {
+  redditDownloadImagesBtn.addEventListener("click", startRedditLatestImagesDownload);
 }
 if (redditDownloadEmptyCategoriesBtn) {
   redditDownloadEmptyCategoriesBtn.addEventListener("click", startRedditEmptyCategoriesDownload);
 }
+if (redditDownloadEmptyUserImagesBtn) {
+  redditDownloadEmptyUserImagesBtn.addEventListener("click", startRedditEmptyUserImagesDownload);
+}
 if (redditStopBtn) {
   redditStopBtn.addEventListener("click", stopRedditDownloadProcess);
 }
+const redditSavedSyncBtn = document.getElementById("reddit-saved-sync-btn");
+if (redditSavedSyncBtn) {
+  redditSavedSyncBtn.addEventListener("click", startRedditSavedSync);
+}
+const redditSavedStopBtn = document.getElementById("reddit-saved-stop-btn");
+if (redditSavedStopBtn) {
+  redditSavedStopBtn.addEventListener("click", stopRedditDownloadProcess);
+}
 if (redditPeriodDownloadBtn) {
-  redditPeriodDownloadBtn.addEventListener("click", startRedditPeriodDownload);
+  redditPeriodDownloadBtn.addEventListener("click", () => startRedditPeriodDownload("videos"));
+}
+const redditPeriodDownloadImagesBtn = document.getElementById("reddit-period-download-images-btn");
+if (redditPeriodDownloadImagesBtn) {
+  redditPeriodDownloadImagesBtn.addEventListener("click", () => startRedditPeriodDownload("images"));
 }
 if (redditFilterInput) {
   redditFilterInput.addEventListener("input", (event) => {
@@ -1744,6 +2661,9 @@ if (resetLibraryBtn) {
 }
 if (cleanupAllDownloadedVideosBtn) {
   cleanupAllDownloadedVideosBtn.addEventListener("click", cleanupAllDownloadedVideos);
+}
+if (cleanupAllDownloadedImagesBtn) {
+  cleanupAllDownloadedImagesBtn.addEventListener("click", cleanupAllDownloadedImages);
 }
 if (cleanupWatchedUnfavoritedBtn) {
   cleanupWatchedUnfavoritedBtn.addEventListener("click", cleanupWatchedUnfavoritedVideos);

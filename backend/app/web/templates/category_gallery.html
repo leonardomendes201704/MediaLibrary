@@ -4,9 +4,9 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Category Gallery</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260401r15" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260401r27" />
   </head>
-  <body>
+  <body{% if play_mode %} class="gallery-play-mode"{% endif %}>
     <header class="topbar">
       <div>
         <h1>Category Gallery</h1>
@@ -21,13 +21,21 @@
       <section class="card">
         <div class="gallery-header-row">
           <h2 id="category-title"></h2>
-          <span id="gallery-meta" class="categories-meta"></span>
+          <div class="gallery-header-side">
+            <span id="gallery-meta" class="categories-meta"></span>
+            <div id="gallery-nav" class="gallery-nav" hidden>
+              <a id="gallery-prev-link" class="gallery-nav-link" href="#" aria-disabled="true">Anterior</a>
+              <a id="gallery-next-link" class="gallery-nav-link" href="#" aria-disabled="true">Proxima galeria</a>
+              <button id="gallery-add-download-list-btn" type="button" class="gallery-nav-link gallery-nav-action-btn" hidden>Adicionar a lista de downloads</button>
+              <button id="gallery-delete-category-btn" type="button" class="gallery-danger-btn gallery-nav-danger-btn">Remover Galeria</button>
+            </div>
+          </div>
+        </div>
+        <div id="gallery-media-tabs" class="gallery-media-tabs" hidden>
+          <a id="gallery-tab-videos" class="gallery-media-tab" href="#">Videos</a>
+          <a id="gallery-tab-images" class="gallery-media-tab" href="#">Imagens</a>
         </div>
         <div id="gallery-tools" class="gallery-tools" hidden>
-          <div class="gallery-tools-group">
-            <button id="gallery-delete-category-btn" type="button" class="gallery-danger-btn">Remover todos os videos</button>
-            <span class="gallery-tools-note">Nao remove a categoria/usuario nem bloqueia novos downloads.</span>
-          </div>
           <div class="gallery-tools-group reddit-period-actions">
             <select id="gallery-period-select">
               <option value="1">1 mes</option>
@@ -41,6 +49,7 @@
         </div>
         <div id="gallery-status" class="gallery-status">Carregando...</div>
         <div id="thumb-grid" class="thumb-grid"></div>
+        <div id="gallery-infinite-sentinel" class="gallery-infinite-sentinel" aria-hidden="true"></div>
         <div class="gallery-actions">
           <a href="/admin">Voltar</a>
         </div>
@@ -60,8 +69,39 @@
           <span class="favorite-splash-heart heart-4">&#10084;</span>
           <span class="favorite-splash-heart heart-5">&#10084;</span>
         </div>
-        <video id="video-modal-player" class="video-modal-player" playsinline></video>
+        <div id="video-modal-stage" class="video-modal-stage">
+          <div class="video-modal-stage-inner">
+            <video
+              id="video-modal-player"
+              class="video-modal-player"
+              playsinline
+              title="Clique: play/pause · Duplo clique: zoom original"
+            ></video>
+          </div>
+        </div>
         <div id="video-modal-caption" class="video-modal-caption"></div>
+      </div>
+    </div>
+
+    <div id="image-modal" class="image-modal" aria-hidden="true">
+      <div class="image-modal-backdrop" data-close="true"></div>
+      <div class="image-modal-panel">
+        <button id="image-modal-close" class="image-modal-close" type="button">Fechar</button>
+        <div id="image-speed-indicator" class="video-speed-indicator" aria-live="polite">1x</div>
+        <div id="image-favorite-splash" class="favorite-splash" aria-hidden="true">
+          <span class="favorite-splash-heart heart-main">&#10084;</span>
+          <span class="favorite-splash-heart heart-1">&#10084;</span>
+          <span class="favorite-splash-heart heart-2">&#10084;</span>
+          <span class="favorite-splash-heart heart-3">&#10084;</span>
+          <span class="favorite-splash-heart heart-4">&#10084;</span>
+          <span class="favorite-splash-heart heart-5">&#10084;</span>
+        </div>
+        <div id="image-modal-stage" class="image-modal-stage">
+          <div class="image-modal-stage-inner">
+            <img id="image-modal-viewer" class="image-modal-viewer" alt="Imagem da categoria" title="Clique para alternar zoom" />
+          </div>
+        </div>
+        <div id="image-modal-caption" class="image-modal-caption"></div>
       </div>
     </div>
 
@@ -88,7 +128,11 @@
       window.FAVORITES_MODE = {{ favorites_mode | tojson }};
       window.RECENTS_MODE = {{ recent_mode | tojson }};
       window.SECRET_MODE = {{ secret_mode | tojson }};
+      window.SAVED_MODE = {{ saved_mode | tojson }};
+      window.IMAGES_MODE = {{ images_mode | tojson }};
+      window.RANDOM_IMAGES_MODE = {{ random_images_mode | tojson }};
+      window.PLAY_MODE = {{ play_mode | tojson }};
     </script>
-    <script src="/static/category_gallery.js?v=20260401r24"></script>
+    <script src="/static/category_gallery.js?v=20260401r51"></script>
   </body>
 </html>

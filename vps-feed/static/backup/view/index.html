@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="theme-color" content="#000000">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>Backup</title>
+  <link rel="stylesheet" href="/feed.css?v=7">
+  <style>
+    .view-nav {
+      position: fixed;
+      z-index: 6;
+      top: 0;
+      left: 50%;
+      transform: translateX(-50%);
+      width: min(100vw, 480px);
+      display: flex;
+      justify-content: space-between;
+      padding: calc(10px + env(safe-area-inset-top)) 14px 8px;
+      pointer-events: none;
+      background: linear-gradient(to bottom, rgba(0, 0, 0, 0.55), transparent);
+    }
+    .view-nav a {
+      pointer-events: auto;
+      color: #fff;
+      text-decoration: none;
+      font-size: 14px;
+      font-weight: 600;
+      opacity: 0.9;
+    }
+    .stage.view-stage {
+      padding-top: env(safe-area-inset-top);
+    }
+  </style>
+</head>
+<body>
+  <nav class="view-nav" aria-label="Navegação">
+    <a href="/backup">Enviar</a>
+    <a href="/">Feed</a>
+  </nav>
+  <main class="stage view-stage" id="stage" aria-label="Fotos de backup"></main>
+  <p class="status" id="status">Carregando…</p>
+  <p class="count" id="count" aria-live="polite"></p>
+  <button class="refresh" id="refresh" type="button" aria-label="Atualizar">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+      <path d="M21 12a9 9 0 1 1-2.2-5.8"/>
+      <path d="M21 3v6h-6"/>
+    </svg>
+  </button>
+  <script src="/backup/view/view.js?v=3"></script>
+</body>
+</html>

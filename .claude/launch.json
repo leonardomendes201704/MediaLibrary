@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "backend",
+      "runtimeExecutable": "powershell",
+      "runtimeArgs": ["-ExecutionPolicy", "Bypass", "-File", "scripts/run_backend.ps1"],
+      "port": 8077,
+      "url": "http://127.0.0.1:8077"
+    }
+  ]
+}

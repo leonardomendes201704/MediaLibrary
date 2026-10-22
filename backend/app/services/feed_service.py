@@ -45,6 +45,8 @@ def _base_feed_stmt(
     only_watched: bool,
     category: str | None,
     blacklisted_categories: set[str] | None,
+    *,
+    only_reddit_saved: bool = False,
 ):
     stmt = (
         select(Video)
@@ -63,9 +65,11 @@ def _base_feed_stmt(
         stmt = stmt.where(Video.is_watched.is_(True))
     elif exclude_watched:
         stmt = stmt.where(Video.is_watched.is_(False))
+    if only_reddit_saved:
+        stmt = stmt.where(Video.is_reddit_saved.is_(True))
     path_lower = func.lower(Video.original_path)
     normalized_category = category.strip().lower() if category else ""
-    if normalized_category:
+    if normalized_category and not only_reddit_saved:
         escaped_category = _escape_like(normalized_category)
         windows_pattern = f"%\\\\{escaped_category}\\\\videos\\\\%"
         unix_pattern = f"%/{escaped_category}/videos/%"
@@ -106,6 +110,7 @@ def load_feed(
     order_by: str = "processed_desc",
     category: str | None = None,
     blacklisted_categories: set[str] | None = None,
+    only_reddit_saved: bool = False,
 ) -> tuple[list[Video], str | None]:
     settings = get_settings()
     page_size = max(1, min(page_size, settings.max_feed_page_size))
@@ -117,6 +122,7 @@ def load_feed(
         only_watched=only_watched,
         category=category,
         blacklisted_categories=blacklisted_categories,
+        only_reddit_saved=only_reddit_saved,
     )
 
     if random_order:
@@ -192,3 +198,35 @@ def load_feed(
         last = items[-1]
         next_cursor = encode_cursor(last_value_from_video(last), last.id)
     return items, next_cursor
+
+
+def count_category_videos(
+    session: Session,
+    category: str,
+    blacklisted_categories: set[str] | None = None,
+) -> int:
+    stmt = _base_feed_stmt(
+        exclude_favorites=False,
+        only_favorites=False,
+        exclude_watched=False,
+        only_watched=False,
+        category=category,
+        blacklisted_categories=blacklisted_categories,
+    )
+    return int(session.scalar(select(func.count()).select_from(stmt.subquery())) or 0)
+
+
+def count_category_watched_videos(
+    session: Session,
+    category: str,
+    blacklisted_categories: set[str] | None = None,
+) -> int:
+    stmt = _base_feed_stmt(
+        exclude_favorites=False,
+        only_favorites=False,
+        exclude_watched=False,
+        only_watched=True,
+        category=category,
+        blacklisted_categories=blacklisted_categories,
+    )
+    return int(session.scalar(select(func.count()).select_from(stmt.subquery())) or 0)

@@ -122,6 +122,7 @@ echo [5/6] Gerando executavel...
   --clean ^
   --onefile ^
   --windowed ^
+  --icon "%BACKEND_DIR%\media_library_tray.ico" ^
   --name MediaLibraryBackendTray ^
   --paths "%BACKEND_DIR%" ^
   --collect-all uvicorn ^
@@ -130,6 +131,7 @@ echo [5/6] Gerando executavel...
   --collect-all anyio ^
   --collect-all jinja2 ^
   --collect-all watchdog ^
+  --add-data "%BACKEND_DIR%\media_library_tray.ico;." ^
   --add-data "%BACKEND_DIR%\app\web\templates;app\web\templates" ^
   --add-data "%BACKEND_DIR%\app\web\static;app\web\static" ^
   "%BACKEND_DIR%\tray_app.py"

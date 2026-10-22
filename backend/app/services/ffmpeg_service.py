@@ -1,7 +1,9 @@
 import json
 import logging
 import os
+import shutil
 import subprocess
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -70,18 +72,48 @@ class FFmpegService:
         self.settings = settings or get_settings()
         self._session_factory = session_factory
 
+    def missing_binaries(self) -> list[str]:
+        missing: list[str] = []
+        for env_name, binary in (("FFMPEG_BIN", self.settings.ffmpeg_bin), ("FFPROBE_BIN", self.settings.ffprobe_bin)):
+            candidate = Path(binary).expanduser()
+            if candidate.exists():
+                continue
+            if shutil.which(binary):
+                continue
+            missing.append(f"{env_name}={binary}")
+        return missing
+
+    def ensure_available(self) -> None:
+        missing = self.missing_binaries()
+        if not missing:
+            return
+        raise RuntimeError(
+            "Dependencias externas ausentes: "
+            + ", ".join(missing)
+            + ". Instale o FFmpeg e garanta que ffmpeg/ffprobe estejam no PATH "
+            + "ou configure os caminhos absolutos em FFMPEG_BIN e FFPROBE_BIN."
+        )
+
     def _run_cmd(self, cmd: list[str]) -> subprocess.CompletedProcess[str]:
         logger.debug("Running subprocess: %s", " ".join(cmd))
         creationflags = 0
         if os.name == "nt":
             creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        return subprocess.run(
-            cmd,
-            text=True,
-            capture_output=True,
-            check=False,
-            creationflags=creationflags,
-        )
+        try:
+            return subprocess.run(
+                cmd,
+                text=True,
+                capture_output=True,
+                check=False,
+                creationflags=creationflags,
+            )
+        except FileNotFoundError as exc:
+            binary = cmd[0] if cmd else "comando"
+            raise RuntimeError(
+                f"Dependencia externa nao encontrada: '{binary}'. "
+                "Instale o FFmpeg e garanta que ffmpeg/ffprobe estejam no PATH, "
+                "ou configure FFMPEG_BIN e FFPROBE_BIN com caminhos absolutos."
+            ) from exc
 
     def probe(self, input_path: str) -> ProbeResult:
         cmd = [
@@ -305,3 +337,121 @@ class FFmpegService:
             fallback = self._run_cmd(fallback_cmd)
             if fallback.returncode != 0:
                 raise RuntimeError(f"thumbnail generation failed: {fallback.stderr.strip()}")
+
+    def extract_first_frame(self, source_path: str, output_path: str) -> None:
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        cmd = [
+            self.settings.ffmpeg_bin,
+            "-y",
+            "-i",
+            source_path,
+            "-frames:v",
+            "1",
+            "-vf",
+            "scale='min(720,iw)':-2",
+            "-q:v",
+            "3",
+            output_path,
+        ]
+        result = self._run_cmd(cmd)
+        if result.returncode != 0:
+            raise RuntimeError(f"first frame extraction failed: {result.stderr.strip()}")
+
+    def create_image_slideshow(
+        self,
+        image_paths: list[Path],
+        output_path: str,
+        interval_seconds: float = 0.5,
+        output_fps: int = 30,
+    ) -> None:
+        if not image_paths:
+            raise ValueError("image_paths vazio")
+        if interval_seconds <= 0:
+            raise ValueError("interval_seconds deve ser > 0")
+        if output_fps <= 0:
+            raise ValueError("output_fps deve ser > 0")
+
+        self.ensure_available()
+        output = Path(output_path)
+        output.parent.mkdir(parents=True, exist_ok=True)
+
+        # Integer frames per slide keeps timing exact (e.g. 15 frames @ 30fps = 500ms).
+        frames_per_slide = max(1, int(round(output_fps * interval_seconds)))
+        input_fps = output_fps / frames_per_slide
+
+        work_dir = Path(tempfile.mkdtemp(prefix="slideshow_frames_"))
+        try:
+            for index, source in enumerate(image_paths, start=1):
+                dest = work_dir / f"{index:06d}.jpg"
+                suffix = source.suffix.lower()
+                if suffix in {".jpg", ".jpeg"}:
+                    try:
+                        os.link(source, dest)
+                    except OSError:
+                        shutil.copy2(source, dest)
+                else:
+                    convert = self._run_cmd(
+                        [
+                            self.settings.ffmpeg_bin,
+                            "-y",
+                            "-i",
+                            str(source),
+                            "-frames:v",
+                            "1",
+                            "-q:v",
+                            "2",
+                            str(dest),
+                        ]
+                    )
+                    if convert.returncode != 0 or not dest.exists():
+                        raise RuntimeError(
+                            f"Falha ao preparar frame do slideshow: {source.name}: {convert.stderr.strip()}"
+                        )
+
+            scale = (
+                "scale='min(iw,1280)':'min(ih,720)':force_original_aspect_ratio=decrease:force_divisible_by=2,"
+                "pad=1280:720:(ow-iw)/2:(oh-ih)/2:color=black,"
+                "setsar=1"
+            )
+            resolved_crf = self.resolve_transcode_crf()
+            cmd = [
+                self.settings.ffmpeg_bin,
+                "-y",
+                "-framerate",
+                f"{input_fps:.6f}".rstrip("0").rstrip("."),
+                "-i",
+                str(work_dir / "%06d.jpg"),
+                "-an",
+                "-vf",
+                scale,
+                "-r",
+                str(output_fps),
+                "-fps_mode",
+                "cfr",
+                "-c:v",
+                "libx264",
+                "-threads",
+                str(self.settings.transcode_threads),
+                "-preset",
+                self.settings.transcode_preset,
+                "-crf",
+                str(resolved_crf),
+                "-pix_fmt",
+                "yuv420p",
+                "-g",
+                str(frames_per_slide),
+                "-keyint_min",
+                str(frames_per_slide),
+                "-sc_threshold",
+                "0",
+                "-movflags",
+                "+faststart",
+                str(output),
+            ]
+            result = self._run_cmd(cmd)
+            if result.returncode != 0:
+                raise RuntimeError(f"ffmpeg slideshow failed: {result.stderr.strip()}")
+            if not output.exists() or output.stat().st_size <= 0:
+                raise RuntimeError("ffmpeg slideshow nao gerou arquivo de saida")
+        finally:
+            shutil.rmtree(work_dir, ignore_errors=True)

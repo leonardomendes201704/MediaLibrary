@@ -4,7 +4,14 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Media Library Admin</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260401r25" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260401r27" />
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css"
+      integrity="sha512-SnH5WK+bZxgPHs44uWIX+LLJAJ9/2PkPKZ5QiAj6Ta86w+fsb2TkcmfRyVX3pBnMFcV7oQPJkl9QevSCWr3W6A=="
+      crossorigin="anonymous"
+      referrerpolicy="no-referrer"
+    />
   </head>
   <body>
     <header class="topbar">
@@ -14,6 +21,12 @@
       </div>
       <div class="topbar-actions">
         <div id="pipeline-state" class="pipeline-state state-unknown">Pipeline: checking...</div>
+        <button id="copy-media-output-path" type="button" title="Caminho ainda nao carregado">
+          Copiar pasta convertidos
+        </button>
+        <button id="generate-slideshow-btn" type="button" title="Gera video com thumbs (500ms cada, max 5 min) na categoria SlideShows">
+          Gerar SlideShow
+        </button>
         <button id="pipeline-start" class="btn-start">Iniciar</button>
         <button id="pipeline-pause" class="btn-pause">Pausar</button>
         <button id="pipeline-stop" class="btn-stop">Parar</button>
@@ -42,6 +55,7 @@
                   <a id="open-category-catalog-link" class="channel-header-link" href="/admin/catalog">Abrir catalogo</a>
                   <button id="reset-library-btn" type="button">Zerar base (preserva configs)</button>
                   <button id="cleanup-all-downloaded-videos-btn" type="button">Limpar videos baixados do app, menos favoritos</button>
+                  <button id="cleanup-all-downloaded-images-btn" type="button">Limpar imagens baixadas do app, menos favoritos</button>
                   <button id="cleanup-watched-unfavorited-btn" type="button">Remover Visualizados nao favoritados</button>
                   <span id="categories-meta" class="categories-meta"></span>
                 </div>
@@ -69,9 +83,19 @@
             <div class="category-subsection" id="users-section">
               <div class="categories-header categories-subheader">
                 <h3>Usuarios</h3>
-                <span id="users-meta" class="categories-meta"></span>
+                <div class="categories-header-actions">
+                  <a id="users-random-images-link" class="channel-header-link" href="/admin/category?random_images=1&amp;name=Imagens%20aleatorias">Visualizar imagens aleatorias</a>
+                  <span id="users-meta" class="categories-meta"></span>
+                </div>
               </div>
               <div id="users-chips" class="category-chip-list"></div>
+            </div>
+            <div class="category-subsection" id="gallery-download-list-section">
+              <div class="categories-header categories-subheader">
+                <h3>Lista de downloads</h3>
+                <span id="gallery-download-list-meta" class="categories-meta"></span>
+              </div>
+              <div id="gallery-download-list" class="gallery-download-list"></div>
             </div>
           </div>
         </div>
@@ -236,15 +260,24 @@
         <div class="section-body">
           <div id="reddit-config-status" class="reddit-status">Checking Reddit config...</div>
           <div class="reddit-actions">
-            <label class="reddit-auto-toggle" title="Quando ligado, o backend aguarda 5 minutos de ociosidade antes de disparar o auto-download dos subreddits u_.">
+            <label class="reddit-auto-toggle" title="Quando ligado, o backend aguarda 5 minutos de ociosidade antes de baixar automaticamente os ultimos videos dos usuarios u_ ainda nao baixados.">
               <input id="reddit-auto-download-toggle" type="checkbox" checked />
-              <span>Auto-download quando ocioso</span>
+              <span>Auto-download videos quando ocioso</span>
             </label>
+            <label class="reddit-auto-toggle" title="Ao ligar, inicia imediatamente o download de todas as imagens do ultimo ano ainda nao baixadas dos usuarios u_. Depois segue automatico quando o backend fica ocioso.">
+              <input id="reddit-auto-image-download-toggle" type="checkbox" checked />
+              <span>Auto-download imagens quando ocioso</span>
+            </label>
+            <button id="reddit-image-count-btn" type="button" class="btn-reddit-download" title="Abre o modal e conta imagens do ultimo ano nos usuarios u_ ainda nao verificados.">
+              Verificar qtd. imagens
+            </button>
             <button id="reddit-fetch-btn" type="button">Buscar assinaturas</button>
             <button id="reddit-save-btn" type="button">Salvar selecao</button>
             <button id="reddit-select-all-btn" type="button">Selecionar tudo</button>
             <button id="reddit-clear-btn" type="button">Limpar selecao</button>
             <button id="reddit-download-btn" type="button" class="btn-reddit-download">Baixar ultimos 10 videos</button>
+            <button id="reddit-download-images-btn" type="button" class="btn-reddit-download">Baixar ultimas 10 imagens</button>
+            <button id="reddit-download-empty-user-images-btn" type="button" class="btn-reddit-download">Baixar 10 imagens de N u_ vazios (imgs/ano)</button>
             <button id="reddit-download-empty-categories-btn" type="button" class="btn-reddit-download">Baixar 5 videos de categorias vazias</button>
             <button id="reddit-stop-btn" type="button">Parar download atual/periodo</button>
             <div class="reddit-period-actions">
@@ -255,7 +288,8 @@
                 <option value="6">6 meses</option>
                 <option value="12">1 ano</option>
               </select>
-              <button id="reddit-period-download-btn" type="button" class="btn-reddit-download">Baixar periodo</button>
+              <button id="reddit-period-download-btn" type="button" class="btn-reddit-download">Baixar periodo videos</button>
+              <button id="reddit-period-download-images-btn" type="button" class="btn-reddit-download">Baixar periodo imagens</button>
             </div>
           </div>
           <div class="reddit-filter-row">
@@ -276,13 +310,43 @@
           </div>
         </div>
       </section>
+
+      <section class="card collapsible-section" data-section-id="reddit-saved">
+        <button class="section-toggle" type="button" data-section-toggle aria-expanded="true">
+          <span class="section-arrow">â–¾</span>
+          <span class="section-title">Meus Salvos</span>
+        </button>
+        <div class="section-body">
+          <p class="reddit-saved-help">
+            Sincroniza posts salvos da conta Reddit autenticada. A API so lista cerca de 1.000 itens mais recentes;
+            o que ja foi sincronizado fica guardado localmente mesmo depois de sair dessa janela.
+          </p>
+          <div id="reddit-saved-status" class="reddit-status">Pronto para sincronizar Meus Salvos.</div>
+          <div class="reddit-actions">
+            <button id="reddit-saved-sync-btn" type="button" class="btn-reddit-download">Sincronizar todos</button>
+            <button id="reddit-saved-stop-btn" type="button">Parar sincronizacao</button>
+            <a id="reddit-saved-gallery-link" class="topbar-link-btn" href="/admin/category?saved=1&amp;name=Meus%20Salvos">Abrir galeria</a>
+            <a id="reddit-saved-gallery-images-link" class="topbar-link-btn" href="/admin/category?saved=1&amp;images=1&amp;name=Meus%20Salvos">Abrir imagens</a>
+          </div>
+          <div class="reddit-monitor">
+            <div class="reddit-monitor-header">
+              <h4>Monitor de Meus Salvos</h4>
+              <span id="reddit-saved-inline-summary" class="reddit-meta">Nenhuma sincronizacao ativa.</span>
+            </div>
+            <div class="reddit-download-progress-track">
+              <div id="reddit-saved-inline-progress-fill" class="reddit-download-progress-fill"></div>
+            </div>
+            <pre id="reddit-saved-inline-logs" class="reddit-download-logs reddit-download-logs-inline"></pre>
+          </div>
+        </div>
+      </section>
     </main>
 
     <div id="reddit-download-modal" class="reddit-download-modal" aria-hidden="true">
       <div class="reddit-download-backdrop"></div>
       <div class="reddit-download-panel">
         <div class="reddit-download-header">
-          <h3>Download Reddit</h3>
+          <h3 id="reddit-download-modal-title">Download Reddit</h3>
           <button id="reddit-download-stop-btn" type="button">Parar</button>
           <button id="reddit-download-close-btn" type="button">Fechar</button>
         </div>
@@ -299,7 +363,7 @@
       window.API_BASE = "{{ api_base_url }}";
       window.DEFAULT_TRANSCODE_CRF = {{ default_transcode_crf }};
     </script>
-    <script src="/static/admin.js?v=20260401r36"></script>
+    <script src="/static/admin.js?v=20260401r66"></script>
   </body>
 </html>
 

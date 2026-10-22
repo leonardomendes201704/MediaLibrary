@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('C:\\Leonardo\\Labs\\MediaLibrary\\backend\\app\\web\\templates', 'app\\web\\templates'), ('C:\\Leonardo\\Labs\\MediaLibrary\\backend\\app\\web\\static', 'app\\web\\static')]
+datas = [('D:\\Leonardo\\Labs\\MediaLibrary\\backend\\media_library_tray.ico', '.'), ('D:\\Leonardo\\Labs\\MediaLibrary\\backend\\app\\web\\templates', 'app\\web\\templates'), ('D:\\Leonardo\\Labs\\MediaLibrary\\backend\\app\\web\\static', 'app\\web\\static')]
 binaries = []
 hiddenimports = []
 tmp_ret = collect_all('uvicorn')
@@ -16,11 +16,13 @@ tmp_ret = collect_all('jinja2')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('watchdog')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+tmp_ret = collect_all('minio')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 
 a = Analysis(
-    ['C:\\Leonardo\\Labs\\MediaLibrary\\backend\\tray_app.py'],
-    pathex=['C:\\Leonardo\\Labs\\MediaLibrary\\backend'],
+    ['D:\\Leonardo\\Labs\\MediaLibrary\\backend\\tray_app.py'],
+    pathex=['D:\\Leonardo\\Labs\\MediaLibrary\\backend'],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
@@ -52,4 +54,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon=['D:\\Leonardo\\Labs\\MediaLibrary\\backend\\media_library_tray.ico'],
 )

@@ -52,9 +52,16 @@ class Video(Base):
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
     is_favorite: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
     favorite_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    minio_object_key: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    minio_sync_status: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    minio_sync_token: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    minio_source_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    minio_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    minio_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     is_watched: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
     watched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     watched_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    is_reddit_saved: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
     duplicate_of_video_id: Mapped[int | None] = mapped_column(ForeignKey("videos.id", ondelete="SET NULL"), nullable=True)
     source_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
     source_mtime: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -132,6 +139,49 @@ class RedditMediaHistory(Base):
     post_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     video_url: Mapped[str] = mapped_column(String(2048), nullable=False)
     title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    media_type: Mapped[str] = mapped_column(String(16), default="video", nullable=False, index=True)
+    is_reddit_saved: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        onupdate=utcnow,
+        nullable=False,
+    )
+
+
+class RedditImage(Base):
+    __tablename__ = "reddit_images"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    original_path: Mapped[str] = mapped_column(String(2048), unique=True, nullable=False, index=True)
+    file_path: Mapped[str] = mapped_column(String(2048), nullable=False)
+    mime_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="ready", nullable=False, index=True)
+    is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
+    is_favorite: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
+    favorite_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    minio_object_key: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    minio_sync_status: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    minio_sync_token: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    minio_source_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    minio_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    minio_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    is_watched: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
+    watched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    is_reddit_saved: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
+    source_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source_mtime: Mapped[float | None] = mapped_column(Float, nullable=True)
+    source_fingerprint: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    width: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    height: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    post_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    post_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    category_name: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False, index=True)
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    sort_timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

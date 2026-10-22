@@ -3,23 +3,28 @@ from email.utils import formatdate
 import json
 from pathlib import Path
 from typing import Literal
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 from sqlalchemy import case, delete, func, or_, select
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.db.database import get_session
-from app.db.models import AppConfig, Folder, Job, Video
+from app.db.models import AppConfig, Folder, Job, RedditImage, Video
 from app.db.schemas import (
     AudioBackfillOut,
     RedditAutoDownloadUpdateIn,
+    RedditIdleImageCountUpdateIn,
     ChannelOut,
     CategoryDeleteIn,
     CategoryDeleteOut,
     CategoryCountOut,
+    CategoryMediaCountsOut,
+    CategoryProgressOut,
     CategoryBlacklistOut,
+    CategoryCoverOut,
     ConfigIn,
     ConfigOut,
     ControlStatusOut,
@@ -30,9 +35,18 @@ from app.db.schemas import (
     FolderCreate,
     FolderOut,
     FolderUpdate,
+    GalleryDownloadListAddIn,
+    GalleryDownloadListAddOut,
+    GalleryDownloadListItemOut,
+    GalleryDownloadListOut,
+    GalleryDownloadListRemoveOut,
+    ImageCleanupOut,
+    ImageFeedResponse,
+    ImageOut,
     JobOut,
     LibraryResetOut,
     ReprocessResponse,
+    SlideshowOut,
     StatsOut,
     VideoListResponse,
     VideoOut,
@@ -40,6 +54,8 @@ from app.db.schemas import (
     RedditDownloadStartIn,
     RedditDownloadStartOut,
     RedditDownloadStatusOut,
+    RedditSavedDownloadStartIn,
+    RedditSavedSyncStatsOut,
     RedditSelectionIn,
     RedditSelectionOut,
     RedditSubredditOut,
@@ -48,6 +64,7 @@ from app.db.schemas import (
     WatchedUpdateIn,
     WatchedUpdateOut,
 )
+from app.services.category_cover_service import CategoryCoverService
 from app.services.channel_runtime_service import ChannelRuntimeService
 from app.services.channel_service import (
     channel_key_for_category,
@@ -63,7 +80,15 @@ from app.services.category_blacklist import (
     load_blacklisted_categories,
     normalize_category_name,
 )
-from app.services.feed_service import load_feed
+from app.services.feed_service import count_category_videos, count_category_watched_videos, load_feed
+from app.services.gallery_download_list_service import add_item as add_gallery_download_list_item
+from app.services.gallery_download_list_service import list_items as list_gallery_download_list_items
+from app.services.gallery_download_list_service import remove_item as remove_gallery_download_list_item
+from app.services.image_feed_service import (
+    count_category_images,
+    count_category_watched_images,
+    load_image_feed,
+)
 from app.services.ingest_service import IngestService
 from app.services.job_service import JobService, JobWorker
 from app.services.reddit_download_service import (
@@ -71,7 +96,8 @@ from app.services.reddit_download_service import (
     REDDIT_DOWNLOADED_SUBREDDITS_KEY,
     RedditDownloadService,
 )
-from app.services.reddit_service import RedditConfigError, RedditService
+from app.services.reddit_service import RedditApiError, RedditConfigError, RedditService
+from app.services.slideshow_service import SlideshowService
 from app.services.streaming import head_stream_with_range, stream_with_range
 from app.services.watcher_service import FolderWatcherService
 
@@ -103,24 +129,23 @@ def _build_control_status(worker: JobWorker, watcher: FolderWatcherService) -> C
 
 
 def _ready_storage_bytes(session: Session) -> int:
-    rows = session.scalars(
-        select(Video.derived_path).where(
+    total = session.scalar(
+        select(func.coalesce(func.sum(Video.source_size), 0)).where(
             Video.is_deleted.is_(False),
             Video.status.in_(["ready", "duplicate"]),
-            Video.derived_path.is_not(None),
         )
     )
-    total = 0
-    seen: set[str] = set()
-    for derived_path in rows:
-        if not derived_path or derived_path in seen:
-            continue
-        seen.add(derived_path)
-        try:
-            total += Path(derived_path).stat().st_size
-        except OSError:
-            continue
-    return total
+    return int(total or 0)
+
+
+def _images_storage_bytes(session: Session) -> int:
+    total = session.scalar(
+        select(func.coalesce(func.sum(RedditImage.source_size), 0)).where(
+            RedditImage.is_deleted.is_(False),
+            RedditImage.status == "ready",
+        )
+    )
+    return int(total or 0)
 
 
 def _safe_int(value: object) -> int | None:
@@ -143,14 +168,19 @@ def _absolute_app_url(request: Request, path: str, **query: object) -> str:
 
 def _category_summary_to_channel(summary, request: Request) -> ChannelOut:
     live_url = _absolute_app_url(request, f"/api/channels/{summary.channel_key}/hls/index.m3u8")
+    gallery_name = summary.category
+    gallery_params: dict[str, str] = {"name": gallery_name}
+    if int(getattr(summary, "video_count", 0) or 0) <= 0 and int(getattr(summary, "image_count", 0) or 0) > 0:
+        gallery_params["images"] = "1"
     return ChannelOut(
         category=summary.category,
         channel_key=summary.channel_key,
-        video_count=summary.count,
+        video_count=int(getattr(summary, "video_count", summary.count) or 0),
+        image_count=int(getattr(summary, "image_count", 0) or 0),
         favorites_count=summary.favorites_count,
         watched_count=summary.watched_count,
         is_user_category=summary.is_user_category,
-        gallery_url=_absolute_app_url(request, "/admin/category", name=summary.category),
+        gallery_url=_absolute_app_url(request, "/admin/category", **gallery_params),
         play_url=_absolute_app_url(request, "/admin/channel", key=summary.channel_key, name=summary.category),
         feed_url=_absolute_app_url(
             request,
@@ -227,7 +257,7 @@ def _build_vod_playlist_m3u(request: Request, videos: list[Video]) -> str:
     for video in videos:
         stream_url = str(request.url_for("get_video_vod_manifest", video_id=video.id))
         title = Path(video.original_path).stem.strip() or f"Video {video.id}"
-        category, _ = extract_path_badges(video.original_path)
+        category, _, _ = extract_path_badges(video.original_path)
         group_title = str(category or "Sem categoria").strip() or "Sem categoria"
         normalized_group = normalize_category_name(group_title) or "vod"
         duration_seconds = int(video.duration_seconds) if video.duration_seconds and video.duration_seconds > 0 else -1
@@ -431,10 +461,10 @@ def _clear_downloaded_subreddits(session: Session) -> bool:
 
 
 def _clear_runtime_app_state(session: Session) -> int:
+    # Preserva assinaturas e selecao (configs). Limpa so o marcador de
+    # "ja baixado", para permitir novo download apos zerar a midia.
     runtime_keys = {
         REDDIT_DOWNLOADED_SUBREDDITS_KEY,
-        REDDIT_SUBSCRIPTIONS_CACHE_KEY,
-        REDDIT_SUBSCRIPTIONS_CACHE_AT_KEY,
     }
     deleted_rows = session.execute(delete(AppConfig).where(AppConfig.key.in_(runtime_keys)))
     session.commit()
@@ -479,7 +509,7 @@ def _current_processing_context(
 
         category: str | None = None
         if source_path:
-            category, _ = extract_path_badges(source_path)
+            category, _, _ = extract_path_badges(source_path)
 
         if category or folder_path or video_id:
             return category, folder_path, video_id
@@ -494,7 +524,7 @@ def _video_to_schema(video: Video, request: Request) -> VideoOut:
         stream_url = str(request.url_for("stream_video", video_id=video.id))
     if video.thumbnail_path and Path(video.thumbnail_path).exists():
         thumb_url = str(request.url_for("get_thumbnail", video_id=video.id))
-    path_category, path_date = extract_path_badges(video.original_path)
+    path_category, path_date, _ = extract_path_badges(video.original_path)
 
     return VideoOut(
         id=video.id,
@@ -506,6 +536,7 @@ def _video_to_schema(video: Video, request: Request) -> VideoOut:
         is_deleted=video.is_deleted,
         is_favorite=video.is_favorite,
         is_watched=video.is_watched,
+        is_reddit_saved=bool(getattr(video, "is_reddit_saved", False)),
         duplicate_of_video_id=video.duplicate_of_video_id,
         duration_seconds=video.duration_seconds,
         width=video.width,
@@ -530,7 +561,12 @@ def _video_to_schema(video: Video, request: Request) -> VideoOut:
 
 @router.get("/health")
 def health() -> dict:
-    return {"status": "ok"}
+    settings = get_settings()
+    media_output_dir = str(settings.media_output_dir.expanduser().resolve())
+    return {
+        "status": "ok",
+        "media_output_dir": media_output_dir,
+    }
 
 
 @router.get("/control/status", response_model=ControlStatusOut)
@@ -544,16 +580,18 @@ def get_control_status(request: Request) -> ControlStatusOut:
 async def start_pipeline(request: Request) -> ControlStatusOut:
     worker: JobWorker = request.app.state.job_worker  # type: ignore[assignment]
     watcher: FolderWatcherService = request.app.state.watcher_service  # type: ignore[assignment]
+    settings = get_settings()
 
     if not worker.is_running:
         await worker.start()
     else:
         await worker.resume()
 
-    if not watcher.is_running:
-        await watcher.start()
-    else:
-        await watcher.resume()
+    if settings.folder_watcher_enabled:
+        if not watcher.is_running:
+            await watcher.start()
+        else:
+            await watcher.resume()
 
     return _build_control_status(worker, watcher)
 
@@ -877,7 +915,7 @@ def blacklist_video_category(
     if not video or video.is_deleted:
         raise HTTPException(status_code=404, detail="Video not found")
 
-    category, _ = extract_path_badges(video.original_path)
+    category, _, _ = extract_path_badges(video.original_path)
     display_category = (category or "").strip()
     normalized_category = normalize_category_name(display_category)
     if not normalized_category:
@@ -905,6 +943,68 @@ def blacklist_video_category(
     )
 
 
+def _category_cover_url(request: Request, category: str, version: int) -> str:
+    base_url = str(request.url_for("get_category_cover", category=quote(category, safe="")))
+    return f"{base_url}?v={version}"
+
+
+def _set_category_cover(
+    request: Request,
+    original_path: str,
+    source_candidates: list[str | None],
+) -> CategoryCoverOut:
+    category, _, _ = extract_path_badges(original_path)
+    display_category = (category or "").strip()
+    if not normalize_category_name(display_category):
+        raise HTTPException(status_code=400, detail="Categoria da midia nao encontrada.")
+
+    source_path = next(
+        (str(candidate) for candidate in source_candidates if candidate and Path(candidate).exists()),
+        None,
+    )
+    if not source_path:
+        raise HTTPException(status_code=404, detail="Arquivo da midia nao encontrado.")
+
+    covers: CategoryCoverService = request.app.state.category_cover_service  # type: ignore[assignment]
+    try:
+        covers.save_from_source(display_category, source_path)
+    except (RuntimeError, OSError, ValueError) as exc:
+        raise HTTPException(status_code=500, detail=f"Falha ao gerar capa: {str(exc)[-300:]}") from exc
+
+    version = covers.cover_version(display_category)
+    return CategoryCoverOut(
+        success=True,
+        category=display_category,
+        cover_url=_category_cover_url(request, display_category, version) if version is not None else None,
+    )
+
+
+@router.post("/videos/{video_id}/category-cover", response_model=CategoryCoverOut)
+def set_video_category_cover(
+    video_id: int,
+    request: Request,
+    session: Session = Depends(get_session),
+) -> CategoryCoverOut:
+    video = session.get(Video, video_id)
+    if not video or video.is_deleted:
+        raise HTTPException(status_code=404, detail="Video not found")
+    if video.status not in {"ready", "duplicate"}:
+        raise HTTPException(status_code=409, detail="Video ainda nao esta pronto.")
+    return _set_category_cover(request, video.original_path, [video.derived_path, video.original_path])
+
+
+@router.post("/images/{image_id}/category-cover", response_model=CategoryCoverOut)
+def set_image_category_cover(
+    image_id: int,
+    request: Request,
+    session: Session = Depends(get_session),
+) -> CategoryCoverOut:
+    image = session.get(RedditImage, image_id)
+    if not image or image.is_deleted or image.status != "ready":
+        raise HTTPException(status_code=404, detail="Image not found")
+    return _set_category_cover(request, image.original_path, [image.file_path])
+
+
 @router.post("/videos/category/delete", response_model=CategoryDeleteOut)
 def delete_category_videos(
     payload: CategoryDeleteIn,
@@ -917,14 +1017,20 @@ def delete_category_videos(
 
     ingest: IngestService = request.app.state.ingest_service  # type: ignore[assignment]
     deleted_videos = ingest.count_category_videos(display_category)
+    deleted_images = ingest.count_category_images(display_category)
+    covers: CategoryCoverService = request.app.state.category_cover_service  # type: ignore[assignment]
+    covers.remove(display_category)
     if deleted_videos > 0:
         background_tasks.add_task(ingest.permanently_delete_category, display_category)
+    if deleted_images > 0:
+        background_tasks.add_task(ingest.permanently_delete_category_images, display_category)
 
     return CategoryDeleteOut(
         success=True,
         category=display_category,
         deleted_videos=deleted_videos,
-        queued=deleted_videos > 0,
+        deleted_images=deleted_images,
+        queued=(deleted_videos + deleted_images) > 0,
     )
 
 
@@ -950,8 +1056,25 @@ def cleanup_all_downloaded_videos(
     ingest: IngestService = request.app.state.ingest_service  # type: ignore[assignment]
     deleted_videos = ingest.permanently_delete_all_downloaded_videos()
     _clear_downloaded_subreddits(session)
-    reddit_download.clear_media_history()
+    reddit_download.clear_media_history(media_type="video")
     return VideoCleanupOut(success=True, deleted_videos=deleted_videos)
+
+
+@router.post("/images/cleanup/downloaded-all", response_model=ImageCleanupOut)
+def cleanup_all_downloaded_images(
+    request: Request,
+    session: Session = Depends(get_session),
+) -> ImageCleanupOut:
+    reddit_download: RedditDownloadService = request.app.state.reddit_download_service  # type: ignore[assignment]
+    download_state = str(reddit_download.get_status().get("state") or "").lower()
+    if download_state == "running":
+        raise HTTPException(status_code=409, detail="Pare o download Reddit atual antes de limpar todas as imagens baixadas.")
+
+    ingest: IngestService = request.app.state.ingest_service  # type: ignore[assignment]
+    deleted_images = ingest.permanently_delete_all_downloaded_images()
+    reddit_download.clear_downloaded_image_subreddits()
+    reddit_download.clear_media_history(media_type="image")
+    return ImageCleanupOut(success=True, deleted_images=deleted_images)
 
 
 @router.post("/library/reset", response_model=LibraryResetOut)
@@ -986,10 +1109,23 @@ def backfill_audio_metadata(
     return AudioBackfillOut(success=True, **result)
 
 
+@router.post("/videos/slideshow", response_model=SlideshowOut)
+def create_thumbs_slideshow(request: Request) -> SlideshowOut:
+    slideshow: SlideshowService = request.app.state.slideshow_service  # type: ignore[assignment]
+    try:
+        result = slideshow.generate()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"Falha ao gerar slideshow: {exc}") from exc
+    return SlideshowOut(**result)
+
+
 @router.put("/videos/{video_id}/favorite", response_model=FavoriteUpdateOut)
 def update_video_favorite(
     video_id: int,
     payload: FavoriteUpdateIn,
+    request: Request,
     session: Session = Depends(get_session),
 ) -> FavoriteUpdateOut:
     video = session.get(Video, video_id)
@@ -998,7 +1134,11 @@ def update_video_favorite(
 
     video.is_favorite = payload.is_favorite
     video.favorite_at = utcnow() if payload.is_favorite else None
-    session.commit()
+    minio_sync = getattr(request.app.state, "minio_sync_service", None)
+    if minio_sync is not None:
+        minio_sync.schedule_favorite(session, "video", video, payload.is_favorite)
+    else:
+        session.commit()
 
     return FavoriteUpdateOut(
         success=True,
@@ -1043,12 +1183,13 @@ def get_feed(
     only_favorites: bool = Query(default=False),
     exclude_watched: bool = Query(default=False),
     only_watched: bool = Query(default=False),
+    only_reddit_saved: bool = Query(default=False),
     order_by: Literal["processed_desc", "detected_desc", "favorite_desc"] = Query(default="processed_desc"),
     category: str | None = Query(default=None),
     session: Session = Depends(get_session),
 ) -> FeedResponse:
     blacklisted_categories = load_blacklisted_categories(session)
-    if normalize_category_name(category or "") in blacklisted_categories:
+    if not only_reddit_saved and normalize_category_name(category or "") in blacklisted_categories:
         return FeedResponse(items=[], next_cursor=None)
 
     items, next_cursor = load_feed(
@@ -1061,24 +1202,293 @@ def get_feed(
         exclude_watched=exclude_watched,
         only_watched=only_watched,
         order_by=order_by,
-        category=category,
+        category=None if only_reddit_saved else category,
         blacklisted_categories=blacklisted_categories,
+        only_reddit_saved=only_reddit_saved,
     )
     return FeedResponse(items=[_video_to_schema(v, request) for v in items], next_cursor=next_cursor)
 
 
-@router.get("/feed/categories", response_model=list[CategoryCountOut])
-def get_feed_categories(session: Session = Depends(get_session)) -> list[CategoryCountOut]:
+def _image_to_schema(image: RedditImage, request: Request) -> ImageOut:
+    file_url = None
+    if image.status == "ready" and image.file_path and Path(image.file_path).exists():
+        file_url = str(request.url_for("get_image_file", image_id=image.id))
+    path_category, path_date, _ = extract_path_badges(image.original_path)
+    return ImageOut(
+        id=image.id,
+        original_path=image.original_path,
+        file_path=image.file_path,
+        mime_type=image.mime_type,
+        status=image.status,
+        is_deleted=image.is_deleted,
+        is_favorite=image.is_favorite,
+        is_watched=image.is_watched,
+        is_reddit_saved=bool(getattr(image, "is_reddit_saved", False)),
+        source_size=image.source_size,
+        width=image.width,
+        height=image.height,
+        post_id=image.post_id,
+        post_url=image.post_url,
+        title=image.title,
+        detected_at=image.detected_at,
+        processed_at=image.processed_at,
+        watched_at=image.watched_at,
+        updated_at=image.updated_at,
+        file_url=file_url,
+        path_category=path_category,
+        path_date=path_date,
+    )
+
+
+@router.get("/feed/images", response_model=ImageFeedResponse)
+def get_image_feed(
+    request: Request,
+    cursor: str | None = Query(default=None),
+    page_size: int = Query(default=15, ge=1, le=100),
+    random_order: bool = Query(default=False),
+    only_favorites: bool = Query(default=False),
+    only_watched: bool = Query(default=False),
+    only_reddit_saved: bool = Query(default=False),
+    order_by: Literal["processed_desc", "detected_desc", "favorite_desc"] = Query(default="detected_desc"),
+    category: str | None = Query(default=None),
+    include_total: bool = Query(default=True),
+    session: Session = Depends(get_session),
+) -> ImageFeedResponse:
     blacklisted_categories = load_blacklisted_categories(session)
-    return [
-        CategoryCountOut(
-            category=item.category,
-            count=item.count,
-            favorites_count=item.favorites_count,
-            watched_count=item.watched_count,
+    if not only_reddit_saved and normalize_category_name(category or "") in blacklisted_categories:
+        return ImageFeedResponse(items=[], next_cursor=None, total=0 if include_total else None)
+
+    items, next_cursor, total = load_image_feed(
+        session,
+        cursor=cursor,
+        page_size=page_size,
+        category=None if only_reddit_saved else category,
+        blacklisted_categories=blacklisted_categories,
+        only_favorites=only_favorites,
+        only_watched=only_watched,
+        only_reddit_saved=only_reddit_saved,
+        order_by=order_by,
+        random_order=random_order,
+        include_total=include_total,
+    )
+    return ImageFeedResponse(
+        items=[_image_to_schema(item, request) for item in items],
+        next_cursor=next_cursor,
+        total=total,
+    )
+
+
+@router.get("/feed/categories/{category}/media-counts", response_model=CategoryMediaCountsOut)
+def get_category_media_counts(
+    category: str,
+    session: Session = Depends(get_session),
+) -> CategoryMediaCountsOut:
+    normalized_category = normalize_category_name(category)
+    blacklisted_categories = load_blacklisted_categories(session)
+    if not normalized_category or normalized_category in blacklisted_categories:
+        return CategoryMediaCountsOut(category=category, videos=0, images=0)
+
+    video_count = count_category_videos(
+        session,
+        category=category,
+        blacklisted_categories=blacklisted_categories,
+    )
+    image_count = count_category_images(
+        session,
+        category=category,
+        blacklisted_categories=blacklisted_categories,
+    )
+    return CategoryMediaCountsOut(category=category, videos=video_count, images=image_count)
+
+
+@router.get("/feed/categories/{category}/progress", response_model=CategoryProgressOut)
+def get_category_progress(
+    category: str,
+    session: Session = Depends(get_session),
+) -> CategoryProgressOut:
+    normalized_category = normalize_category_name(category)
+    blacklisted_categories = load_blacklisted_categories(session)
+    if not normalized_category or normalized_category in blacklisted_categories:
+        return CategoryProgressOut(
+            category=category,
+            total=0,
+            watched=0,
+            videos=0,
+            images=0,
+            videos_watched=0,
+            images_watched=0,
         )
-        for item in list_category_summaries(session, blacklisted_categories)
+
+    video_count = count_category_videos(
+        session,
+        category=category,
+        blacklisted_categories=blacklisted_categories,
+    )
+    image_count = count_category_images(
+        session,
+        category=category,
+        blacklisted_categories=blacklisted_categories,
+    )
+    videos_watched = count_category_watched_videos(
+        session,
+        category=category,
+        blacklisted_categories=blacklisted_categories,
+    )
+    images_watched = count_category_watched_images(
+        session,
+        category=category,
+        blacklisted_categories=blacklisted_categories,
+    )
+    return CategoryProgressOut(
+        category=category,
+        total=video_count + image_count,
+        watched=videos_watched + images_watched,
+        videos=video_count,
+        images=image_count,
+        videos_watched=videos_watched,
+        images_watched=images_watched,
+    )
+
+
+@router.get("/images/{image_id}/file", name="get_image_file")
+def get_image_file(image_id: int, session: Session = Depends(get_session)) -> FileResponse:
+    image = session.get(RedditImage, image_id)
+    if not image or image.is_deleted or image.status != "ready":
+        raise HTTPException(status_code=404, detail="Image not found")
+    file_path = Path(image.file_path)
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Image file missing")
+    media_type = image.mime_type or "application/octet-stream"
+    return FileResponse(file_path, media_type=media_type)
+
+
+@router.put("/images/{image_id}/favorite", response_model=FavoriteUpdateOut)
+def update_image_favorite(
+    image_id: int,
+    payload: FavoriteUpdateIn,
+    request: Request,
+    session: Session = Depends(get_session),
+) -> FavoriteUpdateOut:
+    image = session.get(RedditImage, image_id)
+    if not image or image.is_deleted:
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    image.is_favorite = payload.is_favorite
+    image.favorite_at = utcnow() if payload.is_favorite else None
+    minio_sync = getattr(request.app.state, "minio_sync_service", None)
+    if minio_sync is not None:
+        minio_sync.schedule_favorite(session, "image", image, payload.is_favorite)
+    else:
+        session.commit()
+    return FavoriteUpdateOut(success=True, video_id=image.id, is_favorite=image.is_favorite)
+
+
+@router.put("/images/{image_id}/watched", response_model=WatchedUpdateOut)
+def update_image_watched(
+    image_id: int,
+    payload: WatchedUpdateIn,
+    session: Session = Depends(get_session),
+) -> WatchedUpdateOut:
+    image = session.get(RedditImage, image_id)
+    if not image or image.is_deleted:
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    image.is_watched = payload.is_watched
+    image.watched_at = utcnow() if payload.is_watched else None
+    session.commit()
+    return WatchedUpdateOut(
+        success=True,
+        video_id=image.id,
+        is_watched=image.is_watched,
+        watched_ratio=None,
+    )
+
+
+@router.get("/feed/categories", response_model=list[CategoryCountOut])
+def get_feed_categories(request: Request, session: Session = Depends(get_session)) -> list[CategoryCountOut]:
+    blacklisted_categories = load_blacklisted_categories(session)
+    covers: CategoryCoverService = request.app.state.category_cover_service  # type: ignore[assignment]
+    results: list[CategoryCountOut] = []
+    for item in list_category_summaries(session, blacklisted_categories):
+        cover_version = covers.cover_version(item.category)
+        results.append(
+            CategoryCountOut(
+                category=item.category,
+                count=item.count,
+                video_count=int(getattr(item, "video_count", 0) or 0),
+                image_count=int(getattr(item, "image_count", 0) or 0),
+                favorites_count=item.favorites_count,
+                watched_count=item.watched_count,
+                cover_url=(
+                    _category_cover_url(request, item.category, cover_version)
+                    if cover_version is not None
+                    else None
+                ),
+            )
+        )
+    return results
+
+
+@router.get("/feed/categories/{category}/cover", name="get_category_cover")
+def get_category_cover(category: str, request: Request) -> FileResponse:
+    covers: CategoryCoverService = request.app.state.category_cover_service  # type: ignore[assignment]
+    cover_path = covers.cover_path(category)
+    if cover_path is None or not cover_path.exists():
+        raise HTTPException(status_code=404, detail="Cover not found")
+    return FileResponse(
+        cover_path,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
+
+
+@router.get("/gallery/download-list", response_model=GalleryDownloadListOut)
+def get_gallery_download_list(session: Session = Depends(get_session)) -> GalleryDownloadListOut:
+    items = [
+        GalleryDownloadListItemOut(**item)
+        for item in list_gallery_download_list_items(session)
     ]
+    return GalleryDownloadListOut(items=items, total=len(items))
+
+
+@router.post("/gallery/download-list", response_model=GalleryDownloadListAddOut)
+def post_gallery_download_list_item(
+    payload: GalleryDownloadListAddIn,
+    session: Session = Depends(get_session),
+) -> GalleryDownloadListAddOut:
+    blacklisted_categories = load_blacklisted_categories(session)
+    try:
+        item, created = add_gallery_download_list_item(
+            session,
+            payload.name,
+            payload.media_type,
+            blacklisted_categories=blacklisted_categories,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    parsed_item = GalleryDownloadListItemOut(**item)
+    if created:
+        return GalleryDownloadListAddOut(
+            added=True,
+            item=parsed_item,
+            message="Galeria adicionada a lista de downloads.",
+        )
+    return GalleryDownloadListAddOut(
+        added=False,
+        item=parsed_item,
+        message="Galeria ja estava na lista de downloads.",
+    )
+
+
+@router.delete("/gallery/download-list/{name}", response_model=GalleryDownloadListRemoveOut)
+def delete_gallery_download_list_item(
+    name: str,
+    media_type: Literal["images", "videos"] = Query(default="images"),
+    session: Session = Depends(get_session),
+) -> GalleryDownloadListRemoveOut:
+    removed = remove_gallery_download_list_item(session, name, media_type)
+    return GalleryDownloadListRemoveOut(success=True, removed=removed)
 
 
 @router.get("/channels", response_model=list[ChannelOut])
@@ -1254,6 +1664,11 @@ def get_stats(request: Request, session: Session = Depends(get_session)) -> Stat
     jobs: JobService = request.app.state.job_service  # type: ignore[assignment]
     queue_stats = worker.queue_stats(session)
     ready_storage_bytes = _ready_storage_bytes(session)
+    images_storage_bytes = _images_storage_bytes(session)
+    ready_image_filter = (
+        RedditImage.is_deleted.is_(False),
+        RedditImage.status == "ready",
+    )
     ready_video_filter = (
         Video.is_deleted.is_(False),
         Video.status.in_(["ready", "duplicate"]),
@@ -1335,10 +1750,26 @@ def get_stats(request: Request, session: Session = Depends(get_session)) -> Stat
             )
         )
         or 0,
+        videos_reddit_saved=session.scalar(
+            select(func.count(Video.id)).where(
+                *ready_video_filter,
+                Video.is_reddit_saved.is_(True),
+            )
+        )
+        or 0,
         processing_current_category=current_category,
         processing_current_folder=current_folder,
         processing_current_video_id=current_video_id,
         ready_storage_bytes=ready_storage_bytes,
+        images_total=session.scalar(select(func.count(RedditImage.id)).where(*ready_image_filter)) or 0,
+        images_reddit_saved=session.scalar(
+            select(func.count(RedditImage.id)).where(
+                *ready_image_filter,
+                RedditImage.is_reddit_saved.is_(True),
+            )
+        )
+        or 0,
+        images_storage_bytes=images_storage_bytes,
         videos_pending=session.scalar(
             select(func.count(Video.id)).where(Video.is_deleted.is_(False), Video.status.in_(["new", "pending"]))
         )
@@ -1383,6 +1814,7 @@ async def get_reddit_subscriptions(
     blacklisted_categories = load_blacklisted_categories(session)
     selected = _load_selected_subreddits(session)
     downloaded = reddit_download.get_downloaded_subreddits()
+    year_image_counts = reddit_download.get_user_year_image_counts_map()
     cached_subscriptions, cached_at = _load_reddit_subscriptions_cache(session)
     subscriptions: list[dict[str, object]]
     from_cache = False
@@ -1418,6 +1850,7 @@ async def get_reddit_subscriptions(
         normalized = _normalize_subreddit_name(name).lower()
         if normalized in blacklisted_categories:
             continue
+        year_count_verified = normalized in year_image_counts
         items.append(
             RedditSubredditOut(
                 name=name,
@@ -1427,6 +1860,8 @@ async def get_reddit_subscriptions(
                 url=str(row.get("url") or ""),
                 is_selected=normalized in selected,
                 is_downloaded=normalized in downloaded,
+                year_image_count=year_image_counts.get(normalized) if year_count_verified else None,
+                year_image_count_verified=year_count_verified,
             )
         )
     items.sort(key=lambda item: (-item.subscribers, item.name.lower()))
@@ -1489,9 +1924,37 @@ async def start_reddit_download(
             subreddit_names=selected_names,
             per_subreddit_limit=payload.per_subreddit_limit,
             period_months=payload.period_months,
+            media_type=payload.media_type,
         )
     except RedditConfigError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except InsufficientDiskSpaceError as exc:
+        raise HTTPException(status_code=507, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return RedditDownloadStartOut(
+        started=True,
+        task_id=status.get("task_id"),
+        state=str(status.get("state") or "running"),
+        message=str(status.get("message") or ""),
+    )
+
+
+@router.post("/reddit/saved/download/start", response_model=RedditDownloadStartOut)
+async def start_reddit_saved_download(
+    payload: RedditSavedDownloadStartIn,
+    request: Request,
+) -> RedditDownloadStartOut:
+    reddit_download: RedditDownloadService = request.app.state.reddit_download_service  # type: ignore[assignment]
+    try:
+        status = await reddit_download.start_saved_download(media_type=payload.media_type)
+    except RedditConfigError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RedditApiError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     except InsufficientDiskSpaceError as exc:
         raise HTTPException(status_code=507, detail=str(exc)) from exc
     except RuntimeError as exc:
@@ -1530,12 +1993,66 @@ async def start_reddit_empty_categories_download(request: Request) -> RedditDown
     )
 
 
+@router.post("/reddit/download/start-empty-user-images", response_model=RedditDownloadStartOut)
+async def start_reddit_empty_user_images_download(
+    request: Request,
+    subreddit_limit: int = Query(default=10, ge=1, le=500),
+) -> RedditDownloadStartOut:
+    reddit_download: RedditDownloadService = request.app.state.reddit_download_service  # type: ignore[assignment]
+
+    try:
+        status = await reddit_download.start_download_for_empty_user_images(
+            subreddit_limit=subreddit_limit,
+            per_subreddit_limit=10,
+        )
+    except RedditConfigError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except InsufficientDiskSpaceError as exc:
+        raise HTTPException(status_code=507, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return RedditDownloadStartOut(
+        started=True,
+        task_id=status.get("task_id"),
+        state=str(status.get("state") or "running"),
+        message=str(status.get("message") or ""),
+    )
+
+
 def _build_reddit_download_status_out(status: dict[str, object]) -> RedditDownloadStatusOut:
+    raw_counts = status.get("user_year_image_counts") or {}
+    user_year_image_counts: dict[str, int] = {}
+    if isinstance(raw_counts, dict):
+        for key, value in raw_counts.items():
+            try:
+                user_year_image_counts[str(key)] = max(0, int(value))
+            except (TypeError, ValueError):
+                continue
+    raw_scan = status.get("image_count_scan") or {}
+    scan_payload = raw_scan if isinstance(raw_scan, dict) else {}
+    raw_saved_sync = status.get("saved_sync")
+    saved_sync = None
+    if isinstance(raw_saved_sync, dict):
+        saved_sync = RedditSavedSyncStatsOut(
+            listing_items=int(raw_saved_sync.get("listing_items") or 0),
+            posts=int(raw_saved_sync.get("posts") or 0),
+            videos_found=int(raw_saved_sync.get("videos_found") or 0),
+            images_found=int(raw_saved_sync.get("images_found") or 0),
+            already_marked=int(raw_saved_sync.get("already_marked") or 0),
+            api_limit_likely_reached=bool(raw_saved_sync.get("api_limit_likely_reached")),
+        )
     return RedditDownloadStatusOut(
         task_id=status.get("task_id"),
         auto_enabled=bool(status.get("auto_enabled", True)),
+        auto_image_enabled=bool(status.get("auto_image_enabled", True)),
+        idle_image_count_enabled=bool(status.get("idle_image_count_enabled", False)),
         state=str(status.get("state") or "idle"),
         message=str(status.get("message") or ""),
+        media_type=str(status.get("media_type") or "videos"),
+        trigger=str(status.get("trigger") or "").strip() or None,
         started_at=status.get("started_at"),
         finished_at=status.get("finished_at"),
         total_subreddits=int(status.get("total_subreddits") or 0),
@@ -1545,6 +2062,13 @@ def _build_reddit_download_status_out(status: dict[str, object]) -> RedditDownlo
         failed_videos=int(status.get("failed_videos") or 0),
         items=list(status.get("items") or []),
         logs=[str(line) for line in list(status.get("logs") or [])],
+        user_year_image_counts=user_year_image_counts,
+        image_count_scan={
+            "active": bool(scan_payload.get("active")),
+            "current": str(scan_payload.get("current") or "").strip() or None,
+            "message": str(scan_payload.get("message") or "").strip() or None,
+        },
+        saved_sync=saved_sync,
     )
 
 
@@ -1562,6 +2086,45 @@ def update_reddit_auto_download_enabled(
 ) -> RedditDownloadStatusOut:
     reddit_download: RedditDownloadService = request.app.state.reddit_download_service  # type: ignore[assignment]
     reddit_download.set_auto_download_enabled(payload.enabled)
+    return _build_reddit_download_status_out(reddit_download.get_status())
+
+
+@router.put("/reddit/download/auto-image-enabled", response_model=RedditDownloadStatusOut)
+async def update_reddit_auto_image_download_enabled(
+    payload: RedditAutoDownloadUpdateIn,
+    request: Request,
+) -> RedditDownloadStatusOut:
+    reddit_download: RedditDownloadService = request.app.state.reddit_download_service  # type: ignore[assignment]
+    reddit_download.set_auto_image_download_enabled(payload.enabled)
+    if payload.enabled:
+        # Fire-and-forget so the admin checkbox stays responsive while Reddit listing runs.
+        status = reddit_download.schedule_auto_image_download_now()
+        return _build_reddit_download_status_out(status)
+    return _build_reddit_download_status_out(reddit_download.get_status())
+
+
+@router.post("/reddit/image-count/start", response_model=RedditDownloadStatusOut)
+async def start_reddit_image_count_scan(request: Request) -> RedditDownloadStatusOut:
+    reddit_download: RedditDownloadService = request.app.state.reddit_download_service  # type: ignore[assignment]
+    try:
+        status = await reddit_download.start_image_count_scan()
+    except RedditConfigError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return _build_reddit_download_status_out(status)
+
+
+@router.put("/reddit/idle-image-count/enabled", response_model=RedditDownloadStatusOut)
+def update_reddit_idle_image_count_enabled(
+    payload: RedditIdleImageCountUpdateIn,
+    request: Request,
+) -> RedditDownloadStatusOut:
+    # Mantido por compatibilidade; a contagem passou a ser manual via POST /reddit/image-count/start.
+    reddit_download: RedditDownloadService = request.app.state.reddit_download_service  # type: ignore[assignment]
+    reddit_download.set_idle_image_count_enabled(False)
     return _build_reddit_download_status_out(reddit_download.get_status())
 
 

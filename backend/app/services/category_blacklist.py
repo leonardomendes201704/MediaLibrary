@@ -19,28 +19,38 @@ def normalize_category_name(value: str) -> str:
     return normalized.lower()
 
 
-def extract_path_badges(original_path: str) -> tuple[str | None, str | None]:
+def extract_path_badges(original_path: str) -> tuple[str | None, str | None, str | None]:
     parts = [part for part in Path(original_path).parts if part]
     if len(parts) < 2:
-        return None, None
+        return None, None, None
 
     lower_parts = [part.lower() for part in parts]
-    videos_idx = -1
+    media_idx = -1
+    media_bucket: str | None = None
     for idx, value in enumerate(lower_parts):
-        if value == "videos":
-            videos_idx = idx
+        if value in {"videos", "images"}:
+            media_idx = idx
+            media_bucket = value
 
-    if videos_idx > 0:
-        category = parts[videos_idx - 1]
+    if media_idx > 0:
+        category = parts[media_idx - 1]
         date_value = None
-        if videos_idx + 1 < len(parts) - 1:
-            date_value = parts[videos_idx + 1]
-        return category, date_value
+        if media_idx + 1 < len(parts) - 1:
+            date_value = parts[media_idx + 1]
+        return category, date_value, media_bucket
 
     file_parent = Path(original_path).parent
     date_value = file_parent.name if file_parent.name else None
     category = file_parent.parent.parent.name if len(file_parent.parents) >= 2 else None
-    return category, date_value
+    return category, date_value, None
+
+
+def category_name_from_original_path(original_path: str) -> str | None:
+    category, _, _media_bucket = extract_path_badges(original_path)
+    if not category:
+        return None
+    normalized = normalize_category_name(category)
+    return normalized or None
 
 
 def extract_download_root(original_path: str, known_root: str | Path | None = None) -> Path | None:
@@ -67,15 +77,15 @@ def extract_download_root(original_path: str, known_root: str | Path | None = No
         return None
 
     lower_parts = [part.lower() for part in parts]
-    videos_idx = -1
+    media_idx = -1
     for idx, value in enumerate(lower_parts):
-        if value == "videos":
-            videos_idx = idx
+        if value in {"videos", "images"}:
+            media_idx = idx
 
-    if videos_idx <= 0 or videos_idx + 1 >= len(parts) - 1:
+    if media_idx <= 0 or media_idx + 1 >= len(parts) - 1:
         return None
 
-    root_candidate = Path(*parts[: videos_idx - 1])
+    root_candidate = Path(*parts[: media_idx - 1])
     root_name = root_candidate.name.strip().lower()
     if "download" not in root_name:
         return None
