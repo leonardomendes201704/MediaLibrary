@@ -4,6 +4,7 @@ const FAVORITE_HEART_MIN = 5;
 const SEARCH_DEBOUNCE_MS = 150;
 const SORT_STORAGE_KEY = "media_catalog_sort_v1";
 const RETURN_STATE_KEY = "media_catalog_return_v1";
+const COVERS_HIDDEN_KEY = "media_catalog_covers_hidden_v1";
 
 let collections = [];
 let regularCategories = [];
@@ -295,6 +296,33 @@ function renderCatalog() {
   renderNextPage();
 }
 
+function readCoversHidden() {
+  try {
+    return window.localStorage.getItem(COVERS_HIDDEN_KEY) === "1";
+  } catch (error) {
+    return false;
+  }
+}
+
+function storeCoversHidden(hidden) {
+  try {
+    window.localStorage.setItem(COVERS_HIDDEN_KEY, hidden ? "1" : "0");
+  } catch (error) {
+    // The toggle still works for this page view.
+  }
+}
+
+// Hidden covers are only hidden by CSS, so toggling keeps scroll and loaded cards,
+// and lazy <img> covers under display:none are not even downloaded.
+function applyCoversHidden(hidden) {
+  document.body.classList.toggle("catalog-covers-hidden", hidden);
+  const toggleEl = document.getElementById("catalog-cover-toggle");
+  if (toggleEl) {
+    toggleEl.textContent = hidden ? "Exibir capas" : "Ocultar capas";
+    toggleEl.setAttribute("aria-pressed", hidden ? "true" : "false");
+  }
+}
+
 function saveReturnState() {
   try {
     window.sessionStorage.setItem(RETURN_STATE_KEY, JSON.stringify({
@@ -340,6 +368,12 @@ function bindControls() {
   if ("scrollRestoration" in window.history) {
     window.history.scrollRestoration = "manual";
   }
+  applyCoversHidden(readCoversHidden());
+  document.getElementById("catalog-cover-toggle")?.addEventListener("click", () => {
+    const hidden = !document.body.classList.contains("catalog-covers-hidden");
+    storeCoversHidden(hidden);
+    applyCoversHidden(hidden);
+  });
   document.querySelector(".catalog-main")?.addEventListener("click", (event) => {
     if (event.target instanceof Element && event.target.closest("a.catalog-card")) {
       saveReturnState();

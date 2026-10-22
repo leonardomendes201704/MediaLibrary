@@ -2020,6 +2020,24 @@ th {
   color: #f2f2f2;
 }
 
+.catalog-body .topbar .catalog-cover-toggle {
+  border: 1px solid #3d3d3d;
+  border-radius: 10px;
+  padding: 10px 14px;
+  background: #2a2a2a;
+  color: #f2f2f2;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.catalog-body .topbar .catalog-cover-toggle[aria-pressed="true"] {
+  border-color: #e50914;
+}
+
+.catalog-covers-hidden .catalog-cover-img {
+  display: none;
+}
+
 .catalog-main {
   padding: 16px 24px 48px;
 }
