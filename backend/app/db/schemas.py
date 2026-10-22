@@ -202,10 +202,16 @@ class CategoryDeleteOut(BaseModel):
     queued: bool = False
 
 
+class CategoryCoverIn(BaseModel):
+    # Playback position of the frame to use; omitted means the first frame.
+    position_seconds: float | None = Field(default=None, ge=0)
+
+
 class CategoryCoverOut(BaseModel):
     success: bool
     category: str
     cover_url: str | None = None
+    position_seconds: float | None = None
 
 
 class CategoryBlacklistOut(BaseModel):

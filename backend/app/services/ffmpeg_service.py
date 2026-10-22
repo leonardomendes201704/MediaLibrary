@@ -338,24 +338,43 @@ class FFmpegService:
             if fallback.returncode != 0:
                 raise RuntimeError(f"thumbnail generation failed: {fallback.stderr.strip()}")
 
-    def extract_first_frame(self, source_path: str, output_path: str) -> None:
-        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-        cmd = [
-            self.settings.ffmpeg_bin,
-            "-y",
-            "-i",
-            source_path,
-            "-frames:v",
-            "1",
-            "-vf",
-            "scale='min(720,iw)':-2",
-            "-q:v",
-            "3",
-            output_path,
-        ]
-        result = self._run_cmd(cmd)
-        if result.returncode != 0:
-            raise RuntimeError(f"first frame extraction failed: {result.stderr.strip()}")
+    def extract_frame(
+        self,
+        source_path: str,
+        output_path: str,
+        position_seconds: float | None = None,
+    ) -> None:
+        """Writes one JPEG frame at position_seconds (or the first frame when omitted)."""
+        output = Path(output_path)
+        output.parent.mkdir(parents=True, exist_ok=True)
+
+        def build_cmd(seek_seconds: float | None) -> list[str]:
+            cmd = [self.settings.ffmpeg_bin, "-y"]
+            if seek_seconds is not None:
+                cmd += ["-ss", f"{seek_seconds:.3f}"]
+            return cmd + [
+                "-i",
+                source_path,
+                "-frames:v",
+                "1",
+                "-vf",
+                "scale='min(720,iw)':-2",
+                "-q:v",
+                "3",
+                output_path,
+            ]
+
+        def produced_frame(result: subprocess.CompletedProcess[str]) -> bool:
+            return result.returncode == 0 and output.is_file() and output.stat().st_size > 0
+
+        seek = position_seconds if position_seconds is not None and position_seconds > 0 else None
+        output.unlink(missing_ok=True)
+        result = self._run_cmd(build_cmd(seek))
+        if not produced_frame(result) and seek is not None:
+            # Seeking at or past the last frame encodes nothing; fall back to the first frame.
+            result = self._run_cmd(build_cmd(None))
+        if not produced_frame(result):
+            raise RuntimeError(f"frame extraction failed: {result.stderr.strip()}")
 
     def create_image_slideshow(
         self,

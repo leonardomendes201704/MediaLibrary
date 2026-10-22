@@ -1431,12 +1431,18 @@ async function setCategoryCoverFromActiveMedia() {
   if (coverRequestInFlight) return;
 
   let endpoint = "";
+  let positionSeconds = null;
   if (isImageModalOpen) {
     const imageId = Number(activeImagePlayback?.imageId || 0) || 0;
     if (imageId) endpoint = `/images/${imageId}/category-cover`;
   } else {
     const videoId = resolveActiveVideoId();
     if (videoId) endpoint = `/videos/${videoId}/category-cover`;
+    // The cover is the frame on screen when C is pressed.
+    const playerEl = document.getElementById("video-modal-player");
+    if (playerEl instanceof HTMLVideoElement && Number.isFinite(playerEl.currentTime)) {
+      positionSeconds = Math.max(0, playerEl.currentTime);
+    }
   }
   if (!endpoint) {
     showGalleryToast("Falha ao definir capa: midia atual sem id.", true);
@@ -1445,8 +1451,14 @@ async function setCategoryCoverFromActiveMedia() {
 
   coverRequestInFlight = true;
   try {
-    const result = await api(endpoint, { method: "POST" });
-    const message = `Capa de ${safe(result?.category).trim() || "categoria"} definida.`;
+    const options = { method: "POST" };
+    if (positionSeconds !== null) {
+      options.body = JSON.stringify({ position_seconds: positionSeconds });
+    }
+    const result = await api(endpoint, options);
+    const usedPosition = Number(result?.position_seconds);
+    const atLabel = Number.isFinite(usedPosition) && usedPosition > 0 ? ` (${formatDuration(usedPosition)})` : "";
+    const message = `Capa de ${safe(result?.category).trim() || "categoria"} definida${atLabel}.`;
     showGalleryToast(message);
     updateStatus(message);
   } catch (error) {

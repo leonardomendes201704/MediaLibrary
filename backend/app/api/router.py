@@ -24,6 +24,7 @@ from app.db.schemas import (
     CategoryMediaCountsOut,
     CategoryProgressOut,
     CategoryBlacklistOut,
+    CategoryCoverIn,
     CategoryCoverOut,
     ConfigIn,
     ConfigOut,
@@ -952,6 +953,7 @@ def _set_category_cover(
     request: Request,
     original_path: str,
     source_candidates: list[str | None],
+    position_seconds: float | None = None,
 ) -> CategoryCoverOut:
     category, _, _ = extract_path_badges(original_path)
     display_category = (category or "").strip()
@@ -967,7 +969,7 @@ def _set_category_cover(
 
     covers: CategoryCoverService = request.app.state.category_cover_service  # type: ignore[assignment]
     try:
-        covers.save_from_source(display_category, source_path)
+        covers.save_from_source(display_category, source_path, position_seconds)
     except (RuntimeError, OSError, ValueError) as exc:
         raise HTTPException(status_code=500, detail=f"Falha ao gerar capa: {str(exc)[-300:]}") from exc
 
@@ -976,6 +978,7 @@ def _set_category_cover(
         success=True,
         category=display_category,
         cover_url=_category_cover_url(request, display_category, version) if version is not None else None,
+        position_seconds=position_seconds,
     )
 
 
@@ -983,6 +986,7 @@ def _set_category_cover(
 def set_video_category_cover(
     video_id: int,
     request: Request,
+    payload: CategoryCoverIn | None = None,
     session: Session = Depends(get_session),
 ) -> CategoryCoverOut:
     video = session.get(Video, video_id)
@@ -990,7 +994,17 @@ def set_video_category_cover(
         raise HTTPException(status_code=404, detail="Video not found")
     if video.status not in {"ready", "duplicate"}:
         raise HTTPException(status_code=409, detail="Video ainda nao esta pronto.")
-    return _set_category_cover(request, video.original_path, [video.derived_path, video.original_path])
+
+    position_seconds = payload.position_seconds if payload else None
+    if position_seconds is not None and video.duration_seconds and video.duration_seconds > 0:
+        # A key press right at the end would seek past the last frame.
+        position_seconds = min(position_seconds, max(0.0, video.duration_seconds - 0.1))
+    return _set_category_cover(
+        request,
+        video.original_path,
+        [video.derived_path, video.original_path],
+        position_seconds,
+    )
 
 
 @router.post("/images/{image_id}/category-cover", response_model=CategoryCoverOut)

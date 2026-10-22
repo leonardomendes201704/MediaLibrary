@@ -40,7 +40,12 @@ class CategoryCoverService:
         except OSError:
             return None
 
-    def save_from_source(self, category: str, source_path: str) -> Path:
+    def save_from_source(
+        self,
+        category: str,
+        source_path: str,
+        position_seconds: float | None = None,
+    ) -> Path:
         path = self.cover_path(category)
         if path is None:
             raise ValueError("Categoria invalida para capa.")
@@ -48,11 +53,11 @@ class CategoryCoverService:
         temp_path = path.with_name(f"{path.stem}.tmp.jpg")
         with self._lock:
             try:
-                self._ffmpeg.extract_first_frame(source_path, str(temp_path))
+                self._ffmpeg.extract_frame(source_path, str(temp_path), position_seconds)
                 os.replace(temp_path, path)
             finally:
                 temp_path.unlink(missing_ok=True)
-        logger.info("Category cover for %s set from %s", category, source_path)
+        logger.info("Category cover for %s set from %s at %s", category, source_path, position_seconds)
         return path
 
     def remove(self, category: str) -> bool:
