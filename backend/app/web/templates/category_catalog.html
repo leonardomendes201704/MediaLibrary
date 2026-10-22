@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Catalogo de Categorias</title>
+    <link rel="stylesheet" href="/static/styles.css?v=20260401r25" />
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css"
+      integrity="sha512-SnH5WK+bZxgPHs44uWIX+LLJAJ9/2PkPKZ5QiAj6Ta86w+fsb2TkcmfRyVX3pBnMFcV7oQPJkl9QevSCWr3W6A=="
+      crossorigin="anonymous"
+      referrerpolicy="no-referrer"
+    />
+  </head>
+  <body class="catalog-body">
+    <header class="topbar">
+      <div>
+        <h1>Catalogo</h1>
+        <p class="subtitle">Todas as categorias da biblioteca</p>
+      </div>
+      <div class="topbar-actions">
+        <a class="topbar-link-btn" href="/admin">Voltar ao Admin</a>
+      </div>
+    </header>
+
+    <main class="catalog-main">
+      <div class="catalog-toolbar">
+        <input id="catalog-search" type="search" placeholder="Buscar categoria..." autocomplete="off" aria-label="Buscar categoria" />
+        <select id="catalog-sort" aria-label="Ordenar categorias">
+          <option value="count">Mais itens</option>
+          <option value="name">Nome A-Z</option>
+          <option value="favorites">Mais favoritados</option>
+        </select>
+        <span id="catalog-meta" class="catalog-meta"></span>
+      </div>
+
+      <div id="catalog-status" class="catalog-status">Carregando...</div>
+
+      <section id="catalog-collections-section" class="catalog-section" hidden>
+        <h2 class="catalog-section-title">Colecoes</h2>
+        <div id="catalog-collections-grid" class="catalog-grid"></div>
+      </section>
+
+      <section id="catalog-categories-section" class="catalog-section" hidden>
+        <h2 class="catalog-section-title">Categorias</h2>
+        <div id="catalog-grid" class="catalog-grid"></div>
+      </section>
+
+      <section id="catalog-users-section" class="catalog-section" hidden>
+        <h2 class="catalog-section-title">Usuarios</h2>
+        <div id="catalog-users-grid" class="catalog-grid"></div>
+      </section>
+
+      <div id="catalog-infinite-sentinel" class="catalog-infinite-sentinel" aria-hidden="true"></div>
+    </main>
+
+    <script>
+      window.API_BASE = {{ api_base_url | tojson }};
+    </script>
+    <script src="/static/category_catalog.js?v=20261022r1"></script>
+  </body>
+</html>

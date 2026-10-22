@@ -26,6 +26,7 @@
 - `backend/app/web/templates/category_gallery.html`: shell da galeria por categoria/favoritos.
 - `backend/app/web/static/admin.js`: frontend do admin. Carrega stats, control, folders, videos, jobs, config e Reddit.
 - `backend/app/web/static/category_gallery.js`: frontend da galeria web, badges, playback e marcacao de watched/favorite.
+- `backend/app/web/templates/category_catalog.html` + `backend/app/web/static/category_catalog.js`: catalogo estilo Netflix em `/admin/catalog`, uma capa 2:3 por categoria com infinite scroll.
 - `android-app/app/src/main/java/com/leonardo/medialibrary/data/remote/BackendApi.kt`: contrato Retrofit consumido pelo app Android.
 - `android-app/app/src/main/java/com/leonardo/medialibrary/data/repository/MediaRepositoryImpl.kt`: ponte entre Retrofit/DataStore e UI.
 - `android-app/app/src/main/java/com/leonardo/medialibrary/ui/common/FeedViewModel.kt`: estado compartilhado e acoes do feed no Android.
@@ -80,6 +81,8 @@
 
 - O admin e servido em `/admin` e usa `backend/app/web/templates/index.html` + `backend/app/web/static/admin.js`.
 - A galeria e servida em `/admin/category` e usa `backend/app/web/templates/category_gallery.html` + `backend/app/web/static/category_gallery.js`.
+- O catalogo de categorias e servido em `/admin/catalog` e usa `backend/app/web/templates/category_catalog.html` + `backend/app/web/static/category_catalog.js`; o link `Abrir catalogo` fica no header da secao Categorias do `/admin`. Os dados vem de `GET /feed/categories` + `GET /stats` (colecoes Favoritos/Meus Salvos/Nao vistos/Recentes calculadas como em `loadHealthAndStats()`).
+- As capas do catalogo ainda sao placeholders gerados (gradiente por hash do nome + monograma). O unico ponto para plugar capa real e `coverUrlFor(item)` em `category_catalog.js`, que hoje le `cover_url` do item de `/feed/categories` (campo ainda inexistente em `CategoryCountOut`).
 - `window.API_BASE` e definido no template e usado pelo JS.
 - Sempre que mudar JS servido pelo backend, atualizar a versao `?v=` do asset no template correspondente para evitar cache antigo no navegador.
 

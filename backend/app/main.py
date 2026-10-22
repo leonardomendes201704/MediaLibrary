@@ -85,6 +85,16 @@ def create_app() -> FastAPI:
             },
         )
 
+    @app.get("/admin/catalog", include_in_schema=False)
+    async def admin_catalog_page(request: Request):
+        return templates.TemplateResponse(
+            "category_catalog.html",
+            {
+                "request": request,
+                "api_base_url": "/api",
+            },
+        )
+
     @app.get("/admin/channel", include_in_schema=False)
     async def admin_channel_page(
         request: Request,
