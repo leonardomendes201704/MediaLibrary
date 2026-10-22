@@ -8,6 +8,19 @@ const RANDOM_IMAGES_MODE = Boolean(window.RANDOM_IMAGES_MODE);
 const IMAGES_MODE = Boolean(window.IMAGES_MODE) || RANDOM_IMAGES_MODE;
 // Opened from the catalog: skip the grid, play the first item and return to the catalog on close.
 const PLAY_MODE = Boolean(window.PLAY_MODE);
+const PAGE_PARAMS = new URLSearchParams(window.location.search);
+// , and . hops inside play mode replace history and carry from=catalog, so Esc still goes back to the catalog.
+const CAME_FROM_CATALOG = PLAY_MODE && (PAGE_PARAMS.get("from") === "catalog" || (() => {
+  try {
+    return new URL(document.referrer).pathname === "/admin/catalog";
+  } catch (_) {
+    return false;
+  }
+})());
+// Set by , and . from a regular gallery: open the first item but keep the grid behind it.
+const AUTOPLAY_REQUESTED = PAGE_PARAMS.get("autoplay") === "1";
+// Written by category_catalog.js when a cover is clicked.
+const CATALOG_ORDER_KEY = "media_catalog_order_v1";
 const IS_CATEGORY_VIEW = (
   CATEGORY.length > 0
   && !FAVORITES_MODE
@@ -1378,7 +1391,7 @@ function blacklistCategoryFromVideoAndGoHome(videoId) {
   goToDashboard();
 }
 
-function ensureCoverToastEl() {
+function ensureGalleryToastEl() {
   let toastEl = document.getElementById("gallery-cover-toast");
   if (toastEl) return toastEl;
   toastEl = document.createElement("div");
@@ -1389,8 +1402,8 @@ function ensureCoverToastEl() {
   return toastEl;
 }
 
-function showCoverToast(message, isError = false) {
-  const toastEl = ensureCoverToastEl();
+function showGalleryToast(message, isError = false) {
+  const toastEl = ensureGalleryToastEl();
   toastEl.textContent = message;
   toastEl.classList.toggle("is-error", Boolean(isError));
   toastEl.classList.add("is-visible");
@@ -1426,7 +1439,7 @@ async function setCategoryCoverFromActiveMedia() {
     if (videoId) endpoint = `/videos/${videoId}/category-cover`;
   }
   if (!endpoint) {
-    showCoverToast("Falha ao definir capa: midia atual sem id.", true);
+    showGalleryToast("Falha ao definir capa: midia atual sem id.", true);
     return;
   }
 
@@ -1434,11 +1447,11 @@ async function setCategoryCoverFromActiveMedia() {
   try {
     const result = await api(endpoint, { method: "POST" });
     const message = `Capa de ${safe(result?.category).trim() || "categoria"} definida.`;
-    showCoverToast(message);
+    showGalleryToast(message);
     updateStatus(message);
   } catch (error) {
     const message = `Falha ao definir capa: ${apiErrorDetail(error)}`;
-    showCoverToast(message, true);
+    showGalleryToast(message, true);
     updateStatus(message, true);
   } finally {
     coverRequestInFlight = false;
@@ -2312,14 +2325,8 @@ function goToDashboard() {
 }
 
 function leavePlayMode() {
-  let cameFromCatalog = false;
-  try {
-    cameFromCatalog = new URL(document.referrer).pathname === "/admin/catalog";
-  } catch (_) {
-    cameFromCatalog = false;
-  }
   // Going back keeps the catalog's scroll position and already loaded cards.
-  if (cameFromCatalog && window.history.length > 1) {
+  if (CAME_FROM_CATALOG && window.history.length > 1) {
     window.history.back();
     return;
   }
@@ -2337,7 +2344,7 @@ function closeImageModalByUser() {
 }
 
 function autoplayFirstItem() {
-  if (!PLAY_MODE) return;
+  if (!PLAY_MODE && !AUTOPLAY_REQUESTED) return;
   const firstLink = IMAGES_MODE ? getImageLinks()[0] : getPlayableLinks()[0];
   if (!firstLink) {
     // Nothing to play: show the regular gallery with its empty/error status.
@@ -2349,6 +2356,91 @@ function autoplayFirstItem() {
   } else {
     openModalFromLink(firstLink);
   }
+}
+
+// Returns null when the current category is not in the saved catalog order (use the gallery's own
+// order instead), or { target } where target is null at either end of the list.
+function readCatalogOrderNeighbor(step) {
+  let order = null;
+  try {
+    order = JSON.parse(window.sessionStorage.getItem(CATALOG_ORDER_KEY) || "null");
+  } catch (_) {
+    order = null;
+  }
+  if (!order || typeof order !== "object") return null;
+
+  const currentKey = normalizeCategoryKey(CATEGORY);
+  for (const list of [order.regular, order.users]) {
+    if (!Array.isArray(list)) continue;
+    const idx = list.findIndex((entry) => normalizeCategoryKey(entry?.category) === currentKey);
+    if (idx < 0) continue;
+    const neighbor = list[idx + step];
+    const href = safe(neighbor?.href).trim();
+    return { target: href ? { name: safe(neighbor.category).trim(), href } : null };
+  }
+  return null;
+}
+
+// Same targets as the "Anterior" / "Proxima galeria" links, including their image-trail back stack.
+function readGalleryNavNeighbor(step) {
+  const linkEl = document.getElementById(step < 0 ? "gallery-prev-link" : "gallery-next-link");
+  if (!(linkEl instanceof HTMLAnchorElement) || linkEl.classList.contains("is-disabled")) return null;
+  const imagesTrail = linkEl.dataset.navImagesMode === "1";
+  if (step < 0 && imagesTrail) {
+    const backUrl = popGalleryNavBackStack();
+    return backUrl ? { name: "", href: backUrl } : null;
+  }
+  const href = safe(linkEl.getAttribute("href")).trim();
+  if (!href || href === "#") return null;
+  if (step > 0 && imagesTrail) {
+    pushGalleryNavBackStack(`${window.location.pathname}${window.location.search}`);
+  }
+  return { name: safe(linkEl.title).trim(), href };
+}
+
+function withPlaybackParams(href) {
+  const url = new URL(href, window.location.origin);
+  url.searchParams.delete("autoplay");
+  if (PLAY_MODE) {
+    url.searchParams.set("play", "1");
+    if (CAME_FROM_CATALOG) {
+      url.searchParams.set("from", "catalog");
+    }
+  } else {
+    url.searchParams.delete("play");
+    url.searchParams.set("autoplay", "1");
+  }
+  return `${url.pathname}${url.search}`;
+}
+
+function navigateCategoryByKey(step) {
+  if (!IS_CATEGORY_VIEW) {
+    showGalleryToast("Navegacao entre categorias indisponivel nesta colecao.");
+    return;
+  }
+  const catalogNeighbor = PLAY_MODE ? readCatalogOrderNeighbor(step) : null;
+  const neighbor = catalogNeighbor ? catalogNeighbor.target : readGalleryNavNeighbor(step);
+  if (!neighbor) {
+    const noun = IS_USER_CATEGORY ? "usuario" : "categoria";
+    showGalleryToast(`Nao ha ${noun} ${step < 0 ? "anterior" : "seguinte"}.`);
+    return;
+  }
+
+  showGalleryToast(neighbor.name ? `Indo para ${neighbor.name}...` : "Voltando...");
+  const targetUrl = withPlaybackParams(neighbor.href);
+  if (PLAY_MODE) {
+    window.location.replace(targetUrl);
+  } else {
+    window.location.href = targetUrl;
+  }
+}
+
+function categoryStepFromShortcut(event, code, key) {
+  if (event.repeat || event.ctrlKey || event.metaKey || event.altKey) return 0;
+  if (code === "NumpadDecimal" || code === "NumpadComma") return 0;
+  if (code === "Comma" || key === "," || key === "<") return -1;
+  if (code === "Period" || key === "." || key === ">") return 1;
+  return 0;
 }
 
 async function deleteActivePlaybackAndAdvance() {
@@ -2454,6 +2546,12 @@ function handleModalKeydown(event) {
       setCategoryCoverFromActiveMedia();
       return;
     }
+    const imageCategoryStep = categoryStepFromShortcut(event, code, key);
+    if (imageCategoryStep) {
+      event.preventDefault();
+      navigateCategoryByKey(imageCategoryStep);
+      return;
+    }
     return;
   }
 
@@ -2494,6 +2592,13 @@ function handleModalKeydown(event) {
   if (isCoverShortcut(event, code, keyLower)) {
     event.preventDefault();
     setCategoryCoverFromActiveMedia();
+    return;
+  }
+
+  const categoryStep = categoryStepFromShortcut(event, code, key);
+  if (categoryStep) {
+    event.preventDefault();
+    navigateCategoryByKey(categoryStep);
     return;
   }
 
@@ -2849,6 +2954,12 @@ function deferGallerySecondaryLoads() {
 }
 
 function init() {
+  if (AUTOPLAY_REQUESTED) {
+    // Keep a reload or a later back-stack entry from autoplaying again.
+    const cleanUrl = new URL(window.location.href);
+    cleanUrl.searchParams.delete("autoplay");
+    window.history.replaceState(window.history.state, "", `${cleanUrl.pathname}${cleanUrl.search}${cleanUrl.hash}`);
+  }
   configureGalleryNavClickHandlers();
   configureGalleryDownloadListButton();
   updatePlaybackSpeedIndicator(selectedPlaybackRate);

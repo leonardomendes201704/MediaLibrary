@@ -4,6 +4,8 @@ const FAVORITE_HEART_MIN = 5;
 const SEARCH_DEBOUNCE_MS = 150;
 const SORT_STORAGE_KEY = "media_catalog_sort_v1";
 const RETURN_STATE_KEY = "media_catalog_return_v1";
+// Read by category_gallery.js so , and . follow the catalog's current order and search.
+const CATALOG_ORDER_KEY = "media_catalog_order_v1";
 const COVERS_HIDDEN_KEY = "media_catalog_covers_hidden_v1";
 
 let collections = [];
@@ -323,6 +325,18 @@ function applyCoversHidden(hidden) {
   }
 }
 
+function saveCatalogOrder() {
+  const toEntry = (item) => ({ category: item.category, href: item.href });
+  try {
+    window.sessionStorage.setItem(CATALOG_ORDER_KEY, JSON.stringify({
+      regular: visibleRegular.map(toEntry),
+      users: visibleUsers.map(toEntry),
+    }));
+  } catch (error) {
+    // Without it the player falls back to the gallery's own prev/next order.
+  }
+}
+
 function saveReturnState() {
   try {
     window.sessionStorage.setItem(RETURN_STATE_KEY, JSON.stringify({
@@ -377,6 +391,7 @@ function bindControls() {
   document.querySelector(".catalog-main")?.addEventListener("click", (event) => {
     if (event.target instanceof Element && event.target.closest("a.catalog-card")) {
       saveReturnState();
+      saveCatalogOrder();
     }
   });
   if (sortEl) {
