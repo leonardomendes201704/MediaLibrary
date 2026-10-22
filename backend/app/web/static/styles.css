@@ -2002,7 +2002,12 @@ th {
 }
 
 .catalog-body .topbar {
+  /* Keeps "Ocultar capas" and "Voltar ao Admin" reachable while scrolling the catalog. */
+  position: sticky;
+  top: 0;
+  z-index: 10;
   background: linear-gradient(180deg, #000 0%, #141414 100%);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.6);
 }
 
 .catalog-body .topbar h1 {
